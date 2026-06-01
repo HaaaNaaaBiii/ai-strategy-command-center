@@ -4,9 +4,9 @@ This project ships as a Streamlit web app. It is cross-platform because it runs 
 
 ## What This App Provides
 
-- Dashboard: high-level crypto live-readiness, paper tracking, and equity strategy status.
-- Crypto: signal center, forward paper tracking, candlestick chart levels, and notification controls.
-- Stocks: Taiwan and U.S. strategy ranking, company names, selectable candlestick charts, entry/exit/SL/TP levels, and benchmark comparison.
+- Dashboard: graphical crypto live-readiness, paper tracking, and equity strategy status.
+- Crypto: signal center, forward paper tracking, allocation donut chart, candlestick chart levels, and notification controls.
+- Stocks: Taiwan and U.S. strategy ranking charts, company names, selectable candlestick charts, entry/exit/SL/TP levels, and benchmark comparison.
 - Accounts: Pionex crypto account tracking, Cathay Securities Taiwan stock tracking, Firstrade U.S. stock tracking, position records, and order tracking.
 - Research: current optimization stance and generated research files.
 - Records: generated CSV/JSON outputs for audit and review.
@@ -17,6 +17,12 @@ This project ships as a Streamlit web app. It is cross-platform because it runs 
 The app currently records account state and order plans. It does not place live orders. Pionex execution should only be enabled after API keys, canary capital limits, max order size, daily loss limit, and kill-switch rules are configured outside Git.
 
 Cathay Securities and Firstrade are tracked manually by design. The app can record account equity, positions, and planned orders, but the actual stock orders remain user-executed.
+
+## Strategy Signal Boundary
+
+The strategy supports cash/no-trade states. `HOLD_CASH` and `HOLD_CASH_OR_EXIT` are valid outputs, not errors.
+
+Entry prices are strategy trigger prices. The app does not use the latest close as a recommended entry. For selected assets, the entry waits for a breakout trigger derived from recent highs, trend level, and ATR. Stop loss and TP levels are then calculated from that trigger price.
 
 ## Start Locally
 

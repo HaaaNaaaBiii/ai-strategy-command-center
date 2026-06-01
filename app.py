@@ -80,12 +80,31 @@ st.markdown(
     }
     .hero h1 {font-size: 2.0rem; margin-bottom: 0.2rem;}
     .hero p {color: #cbd5e1; margin-bottom: 0;}
-    .section-card {
+    .nav-shell {
+        padding: 0.7rem 0.9rem;
+        margin-bottom: 0.8rem;
+        border: 1px solid rgba(148, 163, 184, 0.18);
+        border-radius: 18px;
+        background: rgba(15, 23, 42, 0.62);
+    }
+    .section-card, .metric-card {
         border: 1px solid rgba(148, 163, 184, 0.18);
         border-radius: 16px;
         padding: 1rem;
         background: rgba(15, 23, 42, 0.45);
     }
+    .metric-card {min-height: 116px;}
+    .metric-label {color: #94a3b8; font-size: 0.82rem; text-transform: uppercase; letter-spacing: 0.05em;}
+    .metric-value {color: #f8fafc; font-size: 1.65rem; font-weight: 650; margin-top: 0.24rem;}
+    .metric-note {color: #cbd5e1; font-size: 0.86rem; margin-top: 0.35rem;}
+    .action-banner {
+        border-radius: 18px;
+        border: 1px solid rgba(56, 189, 248, 0.26);
+        background: rgba(14, 165, 233, 0.10);
+        padding: 1rem 1.1rem;
+        margin: 0.5rem 0 1rem 0;
+    }
+    .action-banner strong {font-size: 1.1rem;}
     .small-muted {color: #94a3b8; font-size: 0.92rem;}
     </style>
     """,
@@ -121,6 +140,28 @@ def hero(title: str, subtitle: str) -> None:
         """,
         unsafe_allow_html=True,
     )
+
+
+def metric_card(label: str, value: object, note: str = "") -> None:
+    st.markdown(
+        f"""
+        <div class="metric-card">
+            <div class="metric-label">{label}</div>
+            <div class="metric-value">{value}</div>
+            <div class="metric-note">{note}</div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def safe_float(value: object, default: float = 0.0) -> float:
+    try:
+        if value is None or pd.isna(value):
+            return default
+        return float(value)
+    except (TypeError, ValueError):
+        return default
 
 
 def read_csv_or_empty(path: Path) -> pd.DataFrame:
@@ -184,6 +225,183 @@ def latest_status() -> dict[str, object]:
     return read_json_or_empty(TRACKING_DIR / "market_alpha_staggered_status.json")
 
 
+def plot_metric_comparison(frame: pd.DataFrame, title: str) -> go.Figure:
+    fig = go.Figure()
+    if not frame.empty and {"strategy", "return_pct", "max_drawdown_pct"}.issubset(frame.columns):
+        labels = frame["strategy"].astype(str)
+        fig.add_trace(
+            go.Bar(
+                x=labels,
+                y=frame["return_pct"].astype(float),
+                name="Return %",
+                marker_color="#22c55e",
+            )
+        )
+        fig.add_trace(
+            go.Bar(
+                x=labels,
+                y=frame["max_drawdown_pct"].astype(float),
+                name="Max DD %",
+                marker_color="#ef4444",
+            )
+        )
+    fig.update_layout(
+        title=title,
+        template="plotly_dark",
+        height=320,
+        margin=dict(l=10, r=10, t=45, b=10),
+        barmode="group",
+        legend=dict(orientation="h", y=1.08),
+    )
+    return fig
+
+
+def plot_allocation(frame: pd.DataFrame, title: str = "Target Allocation") -> go.Figure:
+    labels = frame["asset"].astype(str).tolist() if not frame.empty else ["CASH"]
+    values = frame["target_weight"].astype(float).tolist() if not frame.empty else [1.0]
+    fig = go.Figure(
+        go.Pie(
+            labels=labels,
+            values=values,
+            hole=0.62,
+            textinfo="label+percent",
+            marker=dict(colors=["#38bdf8", "#22c55e", "#f59e0b", "#ef4444", "#64748b"]),
+        )
+    )
+    fig.update_layout(
+        title=title,
+        template="plotly_dark",
+        height=330,
+        margin=dict(l=10, r=10, t=45, b=10),
+        showlegend=False,
+    )
+    return fig
+
+
+def plot_readiness(status: dict[str, object]) -> go.Figure:
+    ready = bool(status.get("live_ready", False))
+    blockers = len(status.get("blockers", []) or [])
+    score = 100 if ready else max(0, 70 - blockers * 18)
+    fig = go.Figure(
+        go.Indicator(
+            mode="gauge+number",
+            value=score,
+            title={"text": "Live Readiness"},
+            gauge={
+                "axis": {"range": [0, 100]},
+                "bar": {"color": "#22c55e" if ready else "#f59e0b"},
+                "steps": [
+                    {"range": [0, 40], "color": "rgba(239, 68, 68, 0.22)"},
+                    {"range": [40, 75], "color": "rgba(245, 158, 11, 0.22)"},
+                    {"range": [75, 100], "color": "rgba(34, 197, 94, 0.22)"},
+                ],
+            },
+        )
+    )
+    fig.update_layout(template="plotly_dark", height=260, margin=dict(l=10, r=10, t=30, b=10))
+    return fig
+
+
+def action_score(value: object) -> int:
+    return {
+        "Strong Sell": -2,
+        "Sell": -1,
+        "Neutral": 0,
+        "Buy": 1,
+        "Strong Buy": 2,
+    }.get(str(value), 0)
+
+
+def plot_signal_scores(frame: pd.DataFrame, title: str) -> go.Figure:
+    data = frame.copy()
+    if data.empty:
+        data = pd.DataFrame({"symbol": [], "summary": []})
+    data["score"] = data.get("summary", pd.Series(dtype=object)).map(action_score)
+    colors = data["score"].map(lambda value: "#22c55e" if value > 0 else "#ef4444" if value < 0 else "#94a3b8")
+    fig = go.Figure(
+        go.Bar(
+            x=data["symbol"].astype(str),
+            y=data["score"],
+            marker_color=colors,
+            text=data.get("summary", pd.Series(dtype=object)),
+            textposition="outside",
+        )
+    )
+    fig.update_yaxes(range=[-2.4, 2.4], tickvals=[-2, -1, 0, 1, 2])
+    fig.update_layout(
+        title=title,
+        template="plotly_dark",
+        height=320,
+        margin=dict(l=10, r=10, t=45, b=10),
+    )
+    return fig
+
+
+def plot_ranking(frame: pd.DataFrame, title: str) -> go.Figure:
+    data = frame.copy().head(12)
+    labels = [
+        f"{row.symbol} | {row.company}" if "company" in frame.columns else str(row.symbol)
+        for row in data.itertuples()
+    ]
+    colors = data["eligible"].map(lambda value: "#22c55e" if bool(value) else "#64748b")
+    fig = go.Figure(
+        go.Bar(
+            x=data["score"].astype(float),
+            y=labels,
+            orientation="h",
+            marker_color=colors,
+            text=data["score"].astype(float).round(1),
+            textposition="auto",
+        )
+    )
+    fig.update_layout(
+        title=title,
+        template="plotly_dark",
+        height=390,
+        margin=dict(l=10, r=10, t=45, b=10),
+        yaxis=dict(autorange="reversed"),
+    )
+    return fig
+
+
+def plot_account_equity(accounts: pd.DataFrame) -> go.Figure:
+    data = accounts.copy()
+    if data.empty:
+        data = pd.DataFrame({"broker": [], "equity": []})
+    fig = go.Figure(
+        go.Bar(
+            x=data["broker"].astype(str),
+            y=pd.to_numeric(data["equity"], errors="coerce").fillna(0.0),
+            marker_color="#38bdf8",
+            text=data["currency"].astype(str) if "currency" in data else None,
+        )
+    )
+    fig.update_layout(
+        title="Account Equity by Broker",
+        template="plotly_dark",
+        height=320,
+        margin=dict(l=10, r=10, t=45, b=10),
+    )
+    return fig
+
+
+def plot_positions(positions: pd.DataFrame) -> go.Figure:
+    data = positions.copy() if not positions.empty else pd.DataFrame()
+    if not data.empty:
+        data["market_value"] = pd.to_numeric(data["market_value"], errors="coerce").fillna(0.0)
+        data = data.sort_values("market_value", ascending=True)
+    labels = data["symbol"].astype(str) if not data.empty else []
+    values = pd.to_numeric(data["market_value"], errors="coerce").fillna(0.0) if not data.empty else []
+    fig = go.Figure(go.Bar(x=values, y=labels, orientation="h", marker_color="#22c55e"))
+    fig.update_layout(
+        title="Position Market Value",
+        template="plotly_dark",
+        height=330,
+        margin=dict(l=10, r=10, t=45, b=10),
+    )
+    return fig
+
+
 def chart_ohlc(
     frame: pd.DataFrame,
     title: str,
@@ -230,6 +448,7 @@ def chart_ohlc(
     if levels:
         colors = {
             "Entry": "#60a5fa",
+            "Watch Entry": "#60a5fa",
             "Strategy Exit": "#f97316",
             "Stop Loss": "#ef4444",
             "TP1": "#22c55e",
@@ -269,23 +488,41 @@ def chart_ohlc(
     return fig
 
 
-def crypto_levels(symbol: str, frame: pd.DataFrame, target_weight: float) -> dict[str, float]:
+def crypto_strategy_plan(symbol: str, frame: pd.DataFrame, target_weight: float) -> dict[str, object]:
     close = float(frame["close"].iloc[-1])
-    current_atr = float(atr(frame, 14).dropna().iloc[-1])
-    if not target_weight:
-        return {
-            "Entry": close,
-            "Strategy Exit": close,
-            "Stop Loss": close - 2.0 * current_atr,
-            "TP1": close + 2.0 * current_atr,
-            "TP2": close + 4.0 * current_atr,
-        }
+    atr_values = atr(frame, 14).dropna()
+    current_atr = float(atr_values.iloc[-1]) if not atr_values.empty else max(close * 0.03, 0.01)
+    trend_values = ema(frame["close"].astype(float), 50).dropna()
+    trend = float(trend_values.iloc[-1]) if not trend_values.empty else close
+    breakout_values = frame["high"].astype(float).shift(1).rolling(20, min_periods=5).max().dropna()
+    breakout = float(breakout_values.iloc[-1]) if not breakout_values.empty else close
+    entry = max(breakout + 0.10 * current_atr, trend + 0.10 * current_atr)
+    levels: dict[str, float | None] = {
+        "Watch Entry" if target_weight <= 0 else "Entry": entry,
+        "Strategy Exit": max(entry - 2.5 * current_atr, trend),
+    }
+    action = "HOLD_CASH"
+    reason = "No active allocation. Wait for the strategy to rotate back in before placing a live order."
+    if target_weight > 0:
+        action = "WAIT_FOR_BREAKOUT"
+        reason = "Active target weight exists, but entry still waits for the strategy breakout trigger."
+        levels.update(
+            {
+                "Stop Loss": max(entry - 2.0 * current_atr, 0.0),
+                "TP1": entry + 2.0 * current_atr,
+                "TP2": entry + 4.0 * current_atr,
+            }
+        )
     return {
-        "Entry": close,
-        "Strategy Exit": close - 2.5 * current_atr,
-        "Stop Loss": close - 2.0 * current_atr,
-        "TP1": close + 2.0 * current_atr,
-        "TP2": close + 4.0 * current_atr,
+        "symbol": symbol,
+        "action": action,
+        "reason": reason,
+        "close": close,
+        "target_weight": target_weight,
+        "entry_trigger": entry,
+        "atr": current_atr,
+        "trend": trend,
+        "levels": levels,
     }
 
 
@@ -331,22 +568,25 @@ def local_ip() -> str:
         return "127.0.0.1"
 
 
+NAV_OPTIONS = [
+    "Dashboard",
+    "Crypto",
+    "Stocks",
+    "Accounts",
+    "Research",
+    "Records",
+    "Deployment",
+]
+
+st.markdown('<div class="nav-shell">', unsafe_allow_html=True)
+page = st.pills("Workspace", NAV_OPTIONS, default="Dashboard", label_visibility="collapsed") or "Dashboard"
+st.markdown("</div>", unsafe_allow_html=True)
+
 with st.sidebar:
-    st.title("AI Strategy Lab")
-    page = st.radio(
-        "Workspace",
-        [
-            "Dashboard",
-            "Crypto",
-            "Stocks",
-            "Accounts",
-            "Research",
-            "Records",
-            "Deployment",
-        ],
-    )
+    st.title("Control Panel")
+    st.caption("Data controls only. Main navigation is on the top of the page.")
     st.divider()
-    st.caption("Global crypto data controls")
+    st.caption("Crypto data")
     crypto_symbols = st.multiselect(
         "Crypto universe",
         list(DEFAULT_SYMBOLS),
@@ -368,19 +608,63 @@ if page == "Dashboard":
     tw_metrics = read_csv_or_empty(EQUITY_SELECTION_DIR / "tw_metrics.csv")
     us_metrics = read_csv_or_empty(EQUITY_SELECTION_DIR / "us_metrics.csv")
     cols = st.columns(4)
-    cols[0].metric("Crypto live-ready", str(status.get("live_ready", "Unknown")))
-    cols[1].metric("Crypto paper return", pct(status.get("return_pct")))
-    cols[2].metric("Forward days", money(status.get("forward_days")))
-    cols[3].metric("Open blockers", len(status.get("blockers", [])) if status else "-")
-    cols = st.columns(2)
     with cols[0]:
-        st.subheader("Taiwan Strategy")
-        st.dataframe(tw_metrics, hide_index=True, width="stretch")
+        metric_card("Crypto live-ready", str(status.get("live_ready", "Unknown")), "Forward gate status")
     with cols[1]:
-        st.subheader("U.S. Strategy")
+        metric_card("Paper return", pct(status.get("return_pct")), "Crypto strategy")
+    with cols[2]:
+        metric_card("Forward days", money(status.get("forward_days")), "Minimum target: 30")
+    with cols[3]:
+        blockers = len(status.get("blockers", []) or []) if status else "-"
+        metric_card("Open blockers", blockers, "Must be zero before live")
+
+    left, right = st.columns([1, 2])
+    with left:
+        st.plotly_chart(plot_readiness(status), width="stretch")
+    with right:
+        comparison_rows = []
+        for market_name, frame in (("Taiwan", tw_metrics), ("U.S.", us_metrics)):
+            if not frame.empty and {"strategy", "return_pct"}.issubset(frame.columns):
+                for row in frame.to_dict("records"):
+                    comparison_rows.append(
+                        {
+                            "market": market_name,
+                            "strategy": row["strategy"],
+                            "return_pct": safe_float(row.get("return_pct")),
+                        }
+                    )
+        comparison = pd.DataFrame(comparison_rows)
+        fig = go.Figure()
+        if not comparison.empty:
+            for strategy in comparison["strategy"].unique():
+                subset = comparison[comparison["strategy"] == strategy]
+                fig.add_trace(
+                    go.Bar(
+                        x=subset["market"],
+                        y=subset["return_pct"],
+                        name=str(strategy),
+                    )
+                )
+        fig.update_layout(
+            title="Stock Strategy vs Benchmark Return",
+            template="plotly_dark",
+            height=320,
+            margin=dict(l=10, r=10, t=45, b=10),
+            barmode="group",
+        )
+        st.plotly_chart(fig, width="stretch")
+
+    stock_left, stock_right = st.columns(2)
+    with stock_left:
+        st.plotly_chart(plot_metric_comparison(tw_metrics, "Taiwan Metrics"), width="stretch")
+    with stock_right:
+        st.plotly_chart(plot_metric_comparison(us_metrics, "U.S. Metrics"), width="stretch")
+    with st.expander("Raw dashboard data"):
+        st.caption("Taiwan")
+        st.dataframe(tw_metrics, hide_index=True, width="stretch")
+        st.caption("U.S.")
         st.dataframe(us_metrics, hide_index=True, width="stretch")
-    if not metrics.empty:
-        st.subheader("Crypto Research Metrics")
+        st.caption("Crypto metrics")
         st.dataframe(metrics.tail(20), hide_index=True, width="stretch")
 
 elif page == "Crypto":
@@ -406,14 +690,29 @@ elif page == "Crypto":
                 st.error(f"Crypto data load failed: {exc}")
         universe = st.session_state.get("crypto_universe")
         if universe:
-            display_technical_table(summarize_universe(universe))
+            summary = summarize_universe(universe)
+            st.plotly_chart(plot_signal_scores(summary, "Crypto Technical Bias"), width="stretch")
             try:
                 config, offsets, metadata = load_allocation_strategy()
                 snapshot = allocation_snapshot(universe, config, offsets)
                 allocation = aggregate_snapshot(snapshot)
-                st.subheader("Target Allocation")
-                st.dataframe(allocation, hide_index=True, width="stretch")
-                st.json(metadata, expanded=False)
+                col_a, col_b = st.columns([1, 1])
+                with col_a:
+                    st.plotly_chart(plot_allocation(allocation), width="stretch")
+                with col_b:
+                    st.markdown(
+                        """
+                        <div class="action-banner">
+                            <strong>Signal rule</strong><br/>
+                            Active allocation means the strategy has selected a sleeve, but order entry still waits for the breakout trigger. If allocation is cash, the correct action is no trade.
+                        </div>
+                        """,
+                        unsafe_allow_html=True,
+                    )
+                    st.json(metadata, expanded=False)
+                with st.expander("Technical and allocation details"):
+                    display_technical_table(summary)
+                    st.dataframe(allocation, hide_index=True, width="stretch")
             except Exception as exc:
                 st.warning(f"Allocation snapshot failed: {exc}")
         else:
@@ -451,10 +750,19 @@ elif page == "Crypto":
                 st.warning("Live-readiness blockers: " + " | ".join(str(item) for item in blockers))
         equity = read_csv_or_empty(TRACKING_DIR / "market_alpha_staggered_equity.csv")
         if not equity.empty and "equity" in equity:
-            st.line_chart(equity.set_index("timestamp")["equity"])
+            curve = equity.set_index("timestamp")["equity"]
+            fig = go.Figure(go.Scatter(x=curve.index, y=curve, mode="lines", line=dict(color="#38bdf8")))
+            fig.update_layout(
+                title="Forward Paper Equity",
+                template="plotly_dark",
+                height=330,
+                margin=dict(l=10, r=10, t=45, b=10),
+            )
+            st.plotly_chart(fig, width="stretch")
         events = read_csv_or_empty(TRACKING_DIR / "market_alpha_staggered_events.csv")
         if not events.empty:
-            st.dataframe(events.tail(80), hide_index=True, width="stretch")
+            with st.expander("Forward rebalance events"):
+                st.dataframe(events.tail(80), hide_index=True, width="stretch")
     with chart_tab:
         universe = st.session_state.get("crypto_universe")
         if not universe:
@@ -469,13 +777,15 @@ elif page == "Crypto":
             }
             symbol = st.selectbox("Crypto chart", list(universe), key="crypto_chart_symbol")
             target_weight = weights.get(symbol, 0.0)
-            levels = crypto_levels(symbol, universe[symbol], target_weight)
+            plan = crypto_strategy_plan(symbol, universe[symbol], target_weight)
+            levels = plan["levels"]
             cols = st.columns(5)
-            cols[0].metric("Target weight", pct(target_weight * 100.0))
-            cols[1].metric("Entry", price(levels["Entry"]))
-            cols[2].metric("Stop", price(levels["Stop Loss"]))
-            cols[3].metric("TP1", price(levels["TP1"]))
-            cols[4].metric("TP2", price(levels["TP2"]))
+            cols[0].metric("Action", str(plan["action"]))
+            cols[1].metric("Target weight", pct(target_weight * 100.0))
+            cols[2].metric("Entry trigger", price(plan["entry_trigger"]))
+            cols[3].metric("ATR", price(plan["atr"]))
+            cols[4].metric("Close", price(plan["close"]))
+            st.caption(str(plan["reason"]))
             st.plotly_chart(
                 chart_ohlc(universe[symbol], f"{symbol} strategy levels", levels, 50),
                 width="stretch",
@@ -555,7 +865,6 @@ elif page == "Stocks":
             st.info(f"Load {title} data to show strategy ranking and charts.")
             return
         technical = summarize_universe(universe)
-        display_technical_table(technical, show_company=True)
         ranking = rank_equities(universe, config)
         ranking = add_company_names(ranking)
         result = backtest_equity_selection(universe, config)
@@ -573,17 +882,45 @@ elif page == "Stocks":
                 {"strategy": config.market_symbol, **benchmark.metrics},
             ]
         ).to_csv(EQUITY_SELECTION_DIR / f"{market}_metrics.csv", index=False)
-        cols = st.columns(4)
-        cols[0].metric("Strategy return", pct(result.metrics["return_pct"]))
-        cols[1].metric("Benchmark return", pct(benchmark.metrics["return_pct"]))
-        cols[2].metric("Strategy max DD", pct(result.metrics["max_drawdown_pct"]))
-        cols[3].metric("Rebalances", int(float(result.metrics["rebalances"])))
-        st.subheader("Ranking")
-        selected_symbol = selectable_symbol_table(
-            ranking,
-            key=f"{market}_ranking_table",
-            default_symbol=ranking["symbol"].iloc[0] if not ranking.empty else None,
+        summary_metrics = pd.DataFrame(
+            [
+                {"strategy": "equity_selection", **result.metrics},
+                {"strategy": config.market_symbol, **benchmark.metrics},
+            ]
         )
+        cols = st.columns(4)
+        with cols[0]:
+            metric_card("Strategy return", pct(result.metrics["return_pct"]), "Backtest")
+        with cols[1]:
+            metric_card("Benchmark return", pct(benchmark.metrics["return_pct"]), config.market_symbol)
+        with cols[2]:
+            metric_card("Strategy max DD", pct(result.metrics["max_drawdown_pct"]), "Lower is better")
+        with cols[3]:
+            metric_card("Rebalances", int(float(result.metrics["rebalances"])), "Strategy events")
+
+        chart_a, chart_b = st.columns([1, 1])
+        with chart_a:
+            st.plotly_chart(plot_metric_comparison(summary_metrics, f"{title}: Strategy vs Benchmark"), width="stretch")
+        with chart_b:
+            st.plotly_chart(plot_signal_scores(technical, f"{title}: Technical Bias"), width="stretch")
+
+        st.subheader("Strategy Ranking")
+        st.plotly_chart(plot_ranking(ranking, f"{title}: Momentum / Trend Score"), width="stretch")
+        choices = ranking["symbol"].tolist()
+        selected_symbol = (
+            st.pills(
+                "Select stock",
+                choices,
+                default=choices[0] if choices else None,
+                format_func=lambda symbol: f"{symbol} | {company_name(symbol)}",
+                key=f"{market}_symbol_pills",
+            )
+            if choices
+            else None
+        )
+        with st.expander("Raw ranking and technical details"):
+            display_technical_table(technical, show_company=True)
+            st.dataframe(ranking, hide_index=True, width="stretch")
         if not selected_symbol:
             return
         plan = build_equity_trade_plan(selected_symbol, universe, config, ranking)
@@ -605,7 +942,7 @@ elif page == "Stocks":
             ]
             markers = [pd.Timestamp(value) for value in selected_events["timestamp"].tolist()]
         levels = {
-            "Entry": plan.entry_price,
+            "Entry" if plan.entry_price is not None else "Watch Entry": plan.entry_price,
             "Strategy Exit": plan.strategy_exit,
             "Stop Loss": plan.stop_loss,
             "TP1": plan.take_profit_1,
@@ -628,7 +965,17 @@ elif page == "Stocks":
         ).dropna()
         if not curves.empty:
             st.subheader("Strategy vs Benchmark")
-            st.line_chart(curves / curves.iloc[0] * 100.0)
+            normalized = curves / curves.iloc[0] * 100.0
+            fig = go.Figure()
+            for column in normalized.columns:
+                fig.add_trace(go.Scatter(x=normalized.index, y=normalized[column], mode="lines", name=str(column)))
+            fig.update_layout(
+                template="plotly_dark",
+                height=330,
+                margin=dict(l=10, r=10, t=30, b=10),
+                yaxis_title="Indexed equity",
+            )
+            st.plotly_chart(fig, width="stretch")
 
     tw_tab, us_tab = st.tabs(["Taiwan Stocks", "U.S. Stocks"])
     with tw_tab:
@@ -674,7 +1021,16 @@ elif page == "Accounts":
         accounts = load_table(ACCOUNTS_FILE, ACCOUNT_COLUMNS)
         if not accounts.empty:
             st.subheader("Current account snapshots")
-            st.dataframe(accounts, hide_index=True, width="stretch")
+            st.plotly_chart(plot_account_equity(accounts), width="stretch")
+            total_equity = pd.to_numeric(accounts["equity"], errors="coerce").fillna(0.0).sum()
+            total_cash = pd.to_numeric(accounts["cash"], errors="coerce").fillna(0.0).sum()
+            cols = st.columns(2)
+            with cols[0]:
+                metric_card("Tracked equity", money(total_equity), "Manual snapshots")
+            with cols[1]:
+                metric_card("Tracked cash", money(total_cash), "Manual snapshots")
+            with st.expander("Account table"):
+                st.dataframe(accounts, hide_index=True, width="stretch")
     with position_tab:
         st.subheader("Track manual positions")
         col_a, col_b, col_c = st.columns(3)
@@ -712,7 +1068,9 @@ elif page == "Accounts":
         positions = load_table(POSITIONS_FILE, POSITION_COLUMNS)
         if not positions.empty:
             st.subheader("Tracked positions")
-            st.dataframe(positions, hide_index=True, width="stretch")
+            st.plotly_chart(plot_positions(positions), width="stretch")
+            with st.expander("Position table"):
+                st.dataframe(positions, hide_index=True, width="stretch")
     with order_tab:
         st.subheader("Crypto order tracker")
         st.info("Pionex live execution is intentionally disabled until API keys, canary limits, and kill-switch rules are configured outside Git.")
@@ -759,7 +1117,26 @@ elif page == "Accounts":
         orders = load_table(ORDERS_FILE, ORDER_COLUMNS)
         if not orders.empty:
             st.subheader("Tracked orders")
-            st.dataframe(orders.tail(100), hide_index=True, width="stretch")
+            status_counts = orders["status"].value_counts().reset_index()
+            status_counts.columns = ["status", "count"]
+            fig = go.Figure(
+                go.Pie(
+                    labels=status_counts["status"],
+                    values=status_counts["count"],
+                    hole=0.55,
+                    textinfo="label+percent",
+                )
+            )
+            fig.update_layout(
+                title="Order Status Mix",
+                template="plotly_dark",
+                height=320,
+                margin=dict(l=10, r=10, t=45, b=10),
+                showlegend=False,
+            )
+            st.plotly_chart(fig, width="stretch")
+            with st.expander("Order table"):
+                st.dataframe(orders.tail(100), hide_index=True, width="stretch")
 
 elif page == "Research":
     hero(
@@ -775,15 +1152,39 @@ elif page == "Research":
         - All markets: walk-forward and out-of-sample testing are required before increasing capital.
         """
     )
-    st.subheader("Latest generated research files")
-    for path in [
+    research_files = [
         MARKET_ALPHA_DIR / "selected_metrics.csv",
         EQUITY_SELECTION_DIR / "tw_metrics.csv",
         EQUITY_SELECTION_DIR / "us_metrics.csv",
         TRACKING_DIR / "market_alpha_staggered_forward_benchmarks.csv",
-    ]:
-        st.caption(str(path))
-        st.dataframe(read_csv_or_empty(path), hide_index=True, width="stretch")
+    ]
+    tw_metrics = read_csv_or_empty(EQUITY_SELECTION_DIR / "tw_metrics.csv")
+    us_metrics = read_csv_or_empty(EQUITY_SELECTION_DIR / "us_metrics.csv")
+    col_a, col_b = st.columns(2)
+    with col_a:
+        st.plotly_chart(plot_metric_comparison(tw_metrics, "Taiwan Optimization Snapshot"), width="stretch")
+    with col_b:
+        st.plotly_chart(plot_metric_comparison(us_metrics, "U.S. Optimization Snapshot"), width="stretch")
+    forward = read_csv_or_empty(TRACKING_DIR / "market_alpha_staggered_forward_benchmarks.csv")
+    if not forward.empty and {"benchmark", "return_pct"}.issubset(forward.columns):
+        fig = go.Figure(
+            go.Bar(
+                x=forward["benchmark"].astype(str),
+                y=forward["return_pct"].astype(float),
+                marker_color=["#38bdf8", "#22c55e", "#f59e0b"][: len(forward)],
+            )
+        )
+        fig.update_layout(
+            title="Crypto Forward Benchmark Return",
+            template="plotly_dark",
+            height=320,
+            margin=dict(l=10, r=10, t=45, b=10),
+        )
+        st.plotly_chart(fig, width="stretch")
+    with st.expander("Latest generated research files"):
+        for path in research_files:
+            st.caption(str(path))
+            st.dataframe(read_csv_or_empty(path), hide_index=True, width="stretch")
 
 elif page == "Records":
     hero("Records", "Generated research, paper tracking, account, and order files.")

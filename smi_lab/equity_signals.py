@@ -35,11 +35,11 @@ class EquityTradePlan:
     eligible: bool
     rank: int | None
     close: float
-    entry_price: float
-    stop_loss: float
-    take_profit_1: float
-    take_profit_2: float
-    strategy_exit: float
+    entry_price: float | None
+    stop_loss: float | None
+    take_profit_1: float | None
+    take_profit_2: float | None
+    strategy_exit: float | None
     atr: float
     trend_level: float
     reason: str
@@ -92,25 +92,43 @@ def build_equity_trade_plan(
     trend = _latest_value(ema(frame["close"].astype(float), config.trend_period))
     if pd.isna(trend) or trend <= 0:
         trend = close
+    breakout = _latest_value(
+        frame["high"].astype(float).shift(1).rolling(20, min_periods=5).max()
+    )
+    if pd.isna(breakout) or breakout <= 0:
+        breakout = close
     selected = symbol in selected_symbols
     eligible = bool(
         not ranking.empty
         and symbol in set(ranking.loc[ranking["eligible"], "symbol"].tolist())
     )
     rank = ranked_symbols.index(symbol) + 1 if symbol in ranked_symbols else None
-    entry = close
-    stop = min(close - 2.0 * current_atr, trend * 0.98)
-    take_profit_1 = close + 2.0 * current_atr
-    take_profit_2 = close + 4.0 * current_atr
-    strategy_exit = max(close - 2.5 * current_atr, trend)
     if selected:
-        action = "ENTER_OR_HOLD"
-        reason = "Eligible and inside the current top-N momentum sleeve."
+        entry = max(breakout + 0.10 * current_atr, trend + 0.10 * current_atr)
+        stop = min(entry - 2.0 * current_atr, trend * 0.98)
+        take_profit_1 = entry + 2.0 * current_atr
+        take_profit_2 = entry + 4.0 * current_atr
+        strategy_exit = max(entry - 2.5 * current_atr, trend)
+        action = "WAIT_FOR_BREAKOUT"
+        reason = (
+            "Eligible and inside the current top-N sleeve. Entry waits for the "
+            "strategy breakout trigger instead of chasing the latest close."
+        )
     elif eligible:
-        action = "WATCHLIST"
-        reason = "Eligible but not inside the current top-N sleeve."
+        entry = None
+        stop = None
+        take_profit_1 = None
+        take_profit_2 = None
+        strategy_exit = trend
+        action = "HOLD_CASH"
+        reason = "Eligible but not inside the current top-N sleeve; keep cash unless it rotates in."
     else:
-        action = "AVOID_OR_EXIT"
+        entry = None
+        stop = None
+        take_profit_1 = None
+        take_profit_2 = None
+        strategy_exit = trend
+        action = "HOLD_CASH_OR_EXIT"
         reason = "Fails at least one market, trend, momentum, or volatility filter."
     return EquityTradePlan(
         symbol=symbol,
@@ -121,10 +139,10 @@ def build_equity_trade_plan(
         rank=rank,
         close=close,
         entry_price=entry,
-        stop_loss=max(stop, 0.0),
+        stop_loss=max(stop, 0.0) if stop is not None else None,
         take_profit_1=take_profit_1,
         take_profit_2=take_profit_2,
-        strategy_exit=max(strategy_exit, 0.0),
+        strategy_exit=max(strategy_exit, 0.0) if strategy_exit is not None else None,
         atr=current_atr,
         trend_level=trend,
         reason=reason,

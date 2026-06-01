@@ -582,7 +582,9 @@ class StrategyTests(unittest.TestCase):
         plan = build_equity_trade_plan("AAPL", universe, config, ranking)
 
         self.assertIn("company", ranking.columns)
-        self.assertEqual(plan.action, "ENTER_OR_HOLD")
+        self.assertEqual(plan.action, "WAIT_FOR_BREAKOUT")
+        self.assertIsNotNone(plan.entry_price)
+        self.assertGreater(plan.entry_price, plan.close)
         self.assertLess(plan.stop_loss, plan.entry_price)
         self.assertGreater(plan.take_profit_1, plan.entry_price)
         self.assertGreater(plan.take_profit_2, plan.take_profit_1)
