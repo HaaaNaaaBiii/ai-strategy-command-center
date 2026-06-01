@@ -109,6 +109,30 @@ st.markdown(
     .metric-label {color: #94a3b8; font-size: 0.82rem; text-transform: uppercase; letter-spacing: 0.05em;}
     .metric-value {color: #f8fafc; font-size: 1.65rem; font-weight: 650; margin-top: 0.24rem;}
     .metric-note {color: #cbd5e1; font-size: 0.86rem; margin-top: 0.35rem;}
+    .recommend-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(230px, 1fr));
+        gap: 0.75rem;
+        margin: 0.5rem 0 1rem 0;
+    }
+    .recommend-card {
+        border: 1px solid rgba(56, 189, 248, 0.22);
+        border-radius: 16px;
+        padding: 0.95rem;
+        background: rgba(15, 23, 42, 0.58);
+    }
+    .recommend-symbol {font-size: 1.18rem; font-weight: 700; color: #f8fafc;}
+    .recommend-company {font-size: 0.86rem; color: #cbd5e1; margin-top: 0.1rem;}
+    .recommend-levels {font-size: 0.82rem; color: #cbd5e1; margin-top: 0.55rem; line-height: 1.55;}
+    .recommend-badge {
+        display: inline-block;
+        margin-top: 0.55rem;
+        padding: 0.18rem 0.48rem;
+        border-radius: 999px;
+        background: rgba(34, 197, 94, 0.14);
+        color: #86efac;
+        font-size: 0.76rem;
+    }
     .action-banner {
         border-radius: 18px;
         border: 1px solid rgba(56, 189, 248, 0.26);
@@ -165,6 +189,30 @@ def metric_card(label: str, value: object, note: str = "") -> None:
         """,
         unsafe_allow_html=True,
     )
+
+
+def recommendation_cards(frame: pd.DataFrame, title: str, limit: int = 3) -> None:
+    st.subheader(title)
+    if frame.empty:
+        st.info("No scan recommendations yet.")
+        return
+    cards: list[str] = []
+    for row in frame.head(limit).to_dict("records"):
+        cards.append(
+            f"""
+            <div class="recommend-card">
+                <div class="recommend-symbol">{escape(str(row.get("symbol", "-")))}</div>
+                <div class="recommend-company">{escape(str(row.get("company", "")))}</div>
+                <div class="recommend-badge">{escape(str(row.get("action", "-")))}</div>
+                <div class="recommend-levels">
+                    Entry: {price(row.get("entry_price"))}<br/>
+                    SL: {price(row.get("stop_loss"))}<br/>
+                    TP1: {price(row.get("take_profit_1"))} / TP2: {price(row.get("take_profit_2"))}
+                </div>
+            </div>
+            """
+        )
+    st.markdown(f'<div class="recommend-grid">{"".join(cards)}</div>', unsafe_allow_html=True)
 
 
 def safe_float(value: object, default: float = 0.0) -> float:
@@ -312,6 +360,16 @@ def plot_readiness(status: dict[str, object]) -> go.Figure:
     )
     fig.update_layout(template="plotly_dark", height=260, margin=dict(l=10, r=10, t=30, b=10))
     return fig
+
+
+def readiness_label(status: dict[str, object]) -> tuple[str, str]:
+    ready = bool(status.get("live_ready", False))
+    blockers = status.get("blockers", []) or []
+    if ready:
+        return "Ready", "Forward gate passed"
+    if blockers:
+        return "Paper Mode", f"{len(blockers)} blocker(s)"
+    return "Paper Mode", "Forward tracking required"
 
 
 def action_score(value: object) -> int:
@@ -466,9 +524,36 @@ def plot_market_snapshot(frame: pd.DataFrame, title: str) -> go.Figure:
     fig.update_layout(
         title=title,
         template="plotly_dark",
-        height=320,
+        height=270,
         margin=dict(l=10, r=10, t=45, b=10),
         yaxis_title="Change %",
+    )
+    return fig
+
+
+def plot_compact_market_snapshot(frame: pd.DataFrame, title: str, limit: int = 6) -> go.Figure:
+    data = frame.copy().head(limit)
+    if data.empty:
+        data = pd.DataFrame({"symbol": [], "change_pct": []})
+    data["change_pct"] = pd.to_numeric(data.get("change_pct", 0.0), errors="coerce").fillna(0.0)
+    colors = data["change_pct"].map(lambda value: "#22c55e" if value >= 0 else "#ef4444")
+    fig = go.Figure(
+        go.Bar(
+            x=data["change_pct"],
+            y=data["symbol"].astype(str),
+            orientation="h",
+            marker_color=colors,
+            text=data["change_pct"].round(2).astype(str) + "%",
+            textposition="auto",
+        )
+    )
+    fig.update_layout(
+        title=title,
+        template="plotly_dark",
+        height=250,
+        margin=dict(l=8, r=8, t=42, b=8),
+        xaxis_title="Change %",
+        yaxis=dict(autorange="reversed"),
     )
     return fig
 
@@ -693,20 +778,35 @@ with st.sidebar:
 
 if page == "Dashboard":
     hero(
-        "Market Command Center",
-        "Live market snapshot, news, account visibility, and strategy readiness. Backtests are kept in Research.",
+        "Strategy Dashboard",
+        "Current scan recommendations, data health, account status, and market news. Backtests are kept in Research.",
     )
     status = latest_status()
     crypto_snapshot = cached_crypto_snapshots(DEFAULT_SYMBOLS, crypto_interval)
-    tw_snapshot = cached_equity_snapshots(DEFAULT_TW_SYMBOLS, "tw")
-    us_snapshot = cached_equity_snapshots(DEFAULT_US_SYMBOLS, "us")
+    tw_scan = read_csv_or_empty(EQUITY_SCAN_DIR / "tw_recommendations.csv")
+    us_scan = read_csv_or_empty(EQUITY_SCAN_DIR / "us_recommendations.csv")
+    latest_scan_summary = read_json_or_empty(EQUITY_SCAN_DIR / "latest_scan_summary.json")
+    tw_snapshot = (
+        tw_scan[["symbol", "company", "close"]].assign(change_pct=tw_scan.get("score", 0.0))
+        if not tw_scan.empty and {"symbol", "company", "close"}.issubset(tw_scan.columns)
+        else cached_equity_snapshots(DEFAULT_TW_SYMBOLS, "tw")
+    )
+    us_snapshot = (
+        us_scan[["symbol", "company", "close"]].assign(change_pct=us_scan.get("score", 0.0))
+        if not us_scan.empty and {"symbol", "company", "close"}.issubset(us_scan.columns)
+        else cached_equity_snapshots(DEFAULT_US_SYMBOLS, "us")
+    )
     accounts = load_table(ACCOUNTS_FILE, ACCOUNT_COLUMNS)
     positions = load_table(POSITIONS_FILE, POSITION_COLUMNS)
+    readiness, readiness_note = readiness_label(status)
+    scan_items = latest_scan_summary if isinstance(latest_scan_summary, list) else []
+    loaded_symbols = sum(int(item.get("loaded_symbols", 0)) for item in scan_items if isinstance(item, dict))
+    failed_symbols = sum(int(item.get("failed_symbols", 0)) for item in scan_items if isinstance(item, dict))
     cols = st.columns(4)
     with cols[0]:
-        metric_card("Crypto live-ready", str(status.get("live_ready", "Unknown")), "Forward gate status")
+        metric_card("Crypto mode", readiness, readiness_note)
     with cols[1]:
-        metric_card("Paper return", pct(status.get("return_pct")), "Crypto strategy")
+        metric_card("Equity scan", f"{loaded_symbols} loaded", f"{failed_symbols} failed")
     with cols[2]:
         tracked_equity = pd.to_numeric(accounts.get("equity", pd.Series(dtype=float)), errors="coerce").fillna(0.0).sum()
         metric_card("Tracked equity", money(tracked_equity), "Manual broker snapshots")
@@ -714,22 +814,26 @@ if page == "Dashboard":
         tracked_positions = len(positions) if not positions.empty else 0
         metric_card("Tracked positions", tracked_positions, "FT / Cathay / Pionex")
 
-    left, right = st.columns([1, 1])
-    with left:
-        st.plotly_chart(plot_readiness(status), width="stretch")
-    with right:
-        if not positions.empty:
-            st.plotly_chart(plot_positions(positions), width="stretch")
-        else:
-            st.plotly_chart(plot_account_equity(accounts), width="stretch")
+    rec_left, rec_right = st.columns(2)
+    with rec_left:
+        recommendation_cards(tw_scan, "Taiwan Scan Picks")
+    with rec_right:
+        recommendation_cards(us_scan, "U.S. Scan Picks")
 
     market_a, market_b, market_c = st.columns(3)
     with market_a:
-        st.plotly_chart(plot_market_snapshot(crypto_snapshot, "Crypto 24h Snapshot"), width="stretch")
+        st.plotly_chart(plot_compact_market_snapshot(crypto_snapshot, "Crypto 24h"), width="stretch")
     with market_b:
-        st.plotly_chart(plot_market_snapshot(tw_snapshot, "Taiwan Watchlist 1D"), width="stretch")
+        st.plotly_chart(plot_compact_market_snapshot(tw_snapshot, "Taiwan Scan Scores"), width="stretch")
     with market_c:
-        st.plotly_chart(plot_market_snapshot(us_snapshot, "U.S. Watchlist 1D"), width="stretch")
+        st.plotly_chart(plot_compact_market_snapshot(us_snapshot, "U.S. Scan Scores"), width="stretch")
+
+    if not accounts.empty or not positions.empty:
+        account_col, position_col = st.columns(2)
+        with account_col:
+            st.plotly_chart(plot_account_equity(accounts), width="stretch")
+        with position_col:
+            st.plotly_chart(plot_positions(positions), width="stretch")
 
     refresh_news = st.button("Refresh market news")
     news = fetch_market_news(NEWS_FILE, refresh=refresh_news, max_items=6)
