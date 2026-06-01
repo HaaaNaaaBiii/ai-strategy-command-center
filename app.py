@@ -3,7 +3,6 @@ from __future__ import annotations
 import json
 import os
 import socket
-from html import escape
 from pathlib import Path
 
 import pandas as pd
@@ -78,76 +77,6 @@ st.set_page_config(
     layout="wide",
 )
 
-st.markdown(
-    """
-    <style>
-    .block-container {padding-top: 1.4rem; padding-bottom: 2.2rem;}
-    [data-testid="stSidebar"] {background: #0b1220;}
-    .hero {
-        padding: 1.0rem 1.2rem;
-        border: 1px solid rgba(148, 163, 184, 0.22);
-        border-radius: 18px;
-        background: linear-gradient(135deg, rgba(14, 165, 233, 0.14), rgba(15, 23, 42, 0.72));
-        margin-bottom: 1.0rem;
-    }
-    .hero h1 {font-size: 2.0rem; margin-bottom: 0.2rem;}
-    .hero p {color: #cbd5e1; margin-bottom: 0;}
-    .nav-shell {
-        padding: 0.7rem 0.9rem;
-        margin-bottom: 0.8rem;
-        border: 1px solid rgba(148, 163, 184, 0.18);
-        border-radius: 18px;
-        background: rgba(15, 23, 42, 0.62);
-    }
-    .section-card, .metric-card {
-        border: 1px solid rgba(148, 163, 184, 0.18);
-        border-radius: 16px;
-        padding: 1rem;
-        background: rgba(15, 23, 42, 0.45);
-    }
-    .metric-card {min-height: 116px;}
-    .metric-label {color: #94a3b8; font-size: 0.82rem; text-transform: uppercase; letter-spacing: 0.05em;}
-    .metric-value {color: #f8fafc; font-size: 1.65rem; font-weight: 650; margin-top: 0.24rem;}
-    .metric-note {color: #cbd5e1; font-size: 0.86rem; margin-top: 0.35rem;}
-    .recommend-grid {
-        display: grid;
-        grid-template-columns: repeat(auto-fit, minmax(230px, 1fr));
-        gap: 0.75rem;
-        margin: 0.5rem 0 1rem 0;
-    }
-    .recommend-card {
-        border: 1px solid rgba(56, 189, 248, 0.22);
-        border-radius: 16px;
-        padding: 0.95rem;
-        background: rgba(15, 23, 42, 0.58);
-    }
-    .recommend-symbol {font-size: 1.18rem; font-weight: 700; color: #f8fafc;}
-    .recommend-company {font-size: 0.86rem; color: #cbd5e1; margin-top: 0.1rem;}
-    .recommend-levels {font-size: 0.82rem; color: #cbd5e1; margin-top: 0.55rem; line-height: 1.55;}
-    .recommend-badge {
-        display: inline-block;
-        margin-top: 0.55rem;
-        padding: 0.18rem 0.48rem;
-        border-radius: 999px;
-        background: rgba(34, 197, 94, 0.14);
-        color: #86efac;
-        font-size: 0.76rem;
-    }
-    .action-banner {
-        border-radius: 18px;
-        border: 1px solid rgba(56, 189, 248, 0.26);
-        background: rgba(14, 165, 233, 0.10);
-        padding: 1rem 1.1rem;
-        margin: 0.5rem 0 1rem 0;
-    }
-    .action-banner strong {font-size: 1.1rem;}
-    .small-muted {color: #94a3b8; font-size: 0.92rem;}
-    </style>
-    """,
-    unsafe_allow_html=True,
-)
-
-
 def pct(value: float | int | None) -> str:
     if value is None or pd.isna(value):
         return "-"
@@ -167,28 +96,17 @@ def price(value: float | int | None) -> str:
 
 
 def hero(title: str, subtitle: str) -> None:
-    st.markdown(
-        f"""
-        <div class="hero">
-            <h1>{title}</h1>
-            <p>{subtitle}</p>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
+    with st.container(border=True):
+        st.title(title)
+        st.caption(subtitle)
 
 
 def metric_card(label: str, value: object, note: str = "") -> None:
-    st.markdown(
-        f"""
-        <div class="metric-card">
-            <div class="metric-label">{label}</div>
-            <div class="metric-value">{value}</div>
-            <div class="metric-note">{note}</div>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
+    with st.container(border=True):
+        st.caption(label.upper())
+        st.metric(label=" ", value=value)
+        if note:
+            st.caption(note)
 
 
 def recommendation_cards(frame: pd.DataFrame, title: str, limit: int = 3) -> None:
@@ -196,23 +114,16 @@ def recommendation_cards(frame: pd.DataFrame, title: str, limit: int = 3) -> Non
     if frame.empty:
         st.info("No scan recommendations yet.")
         return
-    cards: list[str] = []
     for row in frame.head(limit).to_dict("records"):
-        cards.append(
-            f"""
-            <div class="recommend-card">
-                <div class="recommend-symbol">{escape(str(row.get("symbol", "-")))}</div>
-                <div class="recommend-company">{escape(str(row.get("company", "")))}</div>
-                <div class="recommend-badge">{escape(str(row.get("action", "-")))}</div>
-                <div class="recommend-levels">
-                    Entry: {price(row.get("entry_price"))}<br/>
-                    SL: {price(row.get("stop_loss"))}<br/>
-                    TP1: {price(row.get("take_profit_1"))} / TP2: {price(row.get("take_profit_2"))}
-                </div>
-            </div>
-            """
-        )
-    st.markdown(f'<div class="recommend-grid">{"".join(cards)}</div>', unsafe_allow_html=True)
+        with st.container(border=True):
+            st.markdown(f"**{row.get('symbol', '-')}**")
+            st.caption(str(row.get("company", "")))
+            st.caption(str(row.get("action", "-")))
+            level_cols = st.columns(2)
+            level_cols[0].metric("Entry", price(row.get("entry_price")))
+            level_cols[1].metric("SL", price(row.get("stop_loss")))
+            level_cols[0].metric("TP1", price(row.get("take_profit_1")))
+            level_cols[1].metric("TP2", price(row.get("take_profit_2")))
 
 
 def safe_float(value: object, default: float = 0.0) -> float:
@@ -563,21 +474,16 @@ def render_news_cards(items: list[object]) -> None:
         st.info("No market news is cached yet. Use Refresh news when network access is available.")
         return
     for item in items:
-        title = escape(str(getattr(item, "title", "")))
-        source = escape(str(getattr(item, "source", "")))
-        published_at = escape(str(getattr(item, "published_at", "")))
-        link = escape(str(getattr(item, "link", "")), quote=True)
-        st.markdown(
-            f"""
-            <div class="section-card">
-                <div class="metric-label">{source}</div>
-                <div style="font-size:1.02rem;font-weight:600;margin-top:0.25rem;">{title}</div>
-                <div class="small-muted">{published_at}</div>
-                <a href="{link}" target="_blank">Open source</a>
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
+        title = str(getattr(item, "title", ""))
+        source = str(getattr(item, "source", ""))
+        published_at = str(getattr(item, "published_at", ""))
+        link = str(getattr(item, "link", ""))
+        with st.container(border=True):
+            st.caption(source)
+            st.markdown(f"**{title}**")
+            st.caption(published_at)
+            if link:
+                st.link_button("Open source", link)
 
 
 def chart_ohlc(
@@ -756,9 +662,7 @@ NAV_OPTIONS = [
     "Deployment",
 ]
 
-st.markdown('<div class="nav-shell">', unsafe_allow_html=True)
 page = st.pills("Workspace", NAV_OPTIONS, default="Dashboard", label_visibility="collapsed") or "Dashboard"
-st.markdown("</div>", unsafe_allow_html=True)
 
 with st.sidebar:
     st.title("Control Panel")
@@ -884,14 +788,10 @@ elif page == "Crypto":
                 with col_a:
                     st.plotly_chart(plot_allocation(allocation), width="stretch")
                 with col_b:
-                    st.markdown(
-                        """
-                        <div class="action-banner">
-                            <strong>Signal rule</strong><br/>
-                            Active allocation means the strategy has selected a sleeve, but order entry still waits for the breakout trigger. If allocation is cash, the correct action is no trade.
-                        </div>
-                        """,
-                        unsafe_allow_html=True,
+                    st.info(
+                        "Signal rule: active allocation means the strategy has selected a sleeve, "
+                        "but order entry still waits for the breakout trigger. If allocation is cash, "
+                        "the correct action is no trade."
                     )
                     st.json(metadata, expanded=False)
                 with st.expander("Technical and allocation details"):
