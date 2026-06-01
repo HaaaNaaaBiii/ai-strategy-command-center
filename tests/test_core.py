@@ -17,6 +17,16 @@ from smi_lab.allocation import (
 from smi_lab.config import StrategyConfig, load_portfolio, save_portfolio
 from smi_lab.data import attach_funding_rates, bars_for_years, get_klines
 from smi_lab.evolution import _candidate_configs
+from smi_lab.accounts import (
+    ACCOUNT_COLUMNS,
+    ORDER_COLUMNS,
+    AccountSnapshot,
+    OrderTracker,
+    append_order,
+    load_table,
+    upsert_account,
+)
+from smi_lab.equity_signals import add_company_names, build_equity_trade_plan
 from smi_lab.equity_strategy import (
     EquitySelectionConfig,
     backtest_equity_selection,
@@ -549,6 +559,72 @@ class StrategyTests(unittest.TestCase):
         self.assertEqual(ranking.iloc[0]["symbol"], "STRONG")
         self.assertGreater(result.metrics["return_pct"], benchmark.metrics["return_pct"])
         self.assertFalse(result.rebalances.empty)
+
+    def test_equity_trade_plan_adds_company_and_levels(self) -> None:
+        index = pd.date_range("2025-01-01", periods=260, freq="1D", tz="UTC")
+        market = pd.Series(np.linspace(100, 140, len(index)), index=index)
+        strong = pd.Series(np.linspace(100, 220, len(index)), index=index)
+        universe = {
+            "SPY": pd.DataFrame({"open": market, "high": market + 1, "low": market - 1, "close": market}, index=index),
+            "AAPL": pd.DataFrame({"open": strong, "high": strong + 1, "low": strong - 1, "close": strong}, index=index),
+        }
+        config = EquitySelectionConfig(
+            market_symbol="SPY",
+            top_n=1,
+            rebalance_bars=20,
+            short_momentum_period=20,
+            long_momentum_period=60,
+            trend_period=80,
+            fee_bps=0.0,
+            slippage_bps=0.0,
+        )
+        ranking = add_company_names(rank_equities(universe, config))
+        plan = build_equity_trade_plan("AAPL", universe, config, ranking)
+
+        self.assertIn("company", ranking.columns)
+        self.assertEqual(plan.action, "ENTER_OR_HOLD")
+        self.assertLess(plan.stop_loss, plan.entry_price)
+        self.assertGreater(plan.take_profit_1, plan.entry_price)
+        self.assertGreater(plan.take_profit_2, plan.take_profit_1)
+
+    def test_account_tables_upsert_and_append(self) -> None:
+        with TemporaryDirectory() as directory:
+            account_path = f"{directory}/accounts.csv"
+            order_path = f"{directory}/orders.csv"
+            accounts = upsert_account(
+                account_path,
+                AccountSnapshot(
+                    account_id="pionex-live-main",
+                    broker="Pionex",
+                    market="crypto",
+                    currency="USDT",
+                    cash=1000.0,
+                    equity=1000.0,
+                ),
+            )
+            orders = append_order(
+                order_path,
+                OrderTracker(
+                    account_id="pionex-live-main",
+                    broker="Pionex",
+                    market="crypto",
+                    symbol="BTCUSDT",
+                    company="Bitcoin",
+                    side="BUY",
+                    status="PLANNED",
+                    quantity=0.01,
+                    entry_price=100.0,
+                    stop_loss=90.0,
+                    take_profit_1=110.0,
+                    take_profit_2=120.0,
+                    strategy="test",
+                ),
+            )
+
+            self.assertEqual(accounts.iloc[0]["broker"], "Pionex")
+            self.assertEqual(orders.iloc[0]["status"], "PLANNED")
+            self.assertEqual(list(load_table(account_path, ACCOUNT_COLUMNS).columns), ACCOUNT_COLUMNS)
+            self.assertEqual(list(load_table(order_path, ORDER_COLUMNS).columns), ORDER_COLUMNS)
 
     def test_rotation_avoids_asset_with_excessive_recent_funding(self) -> None:
         index = pd.date_range("2025-01-01", periods=30, freq="4h", tz="UTC")
