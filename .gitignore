@@ -1,0 +1,24 @@
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+
+# Local environments
+.venv/
+venv/
+
+# Local logs
+*.log
+streamlit.out.log
+streamlit.err.log
+
+# Market data cache and generated research artifacts
+data/
+outputs/
+
+# OS/editor files
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
