@@ -45,6 +45,7 @@ from smi_lab.market_info import (
     cached_equity_snapshots,
     fetch_market_news,
 )
+from smi_lab.broker_import import DEFAULT_IMPORT_DIR, sync_broker_exports
 from smi_lab.notifier import send_discord, send_telegram
 from smi_lab.paper import (
     aggregate_snapshot,
@@ -53,6 +54,7 @@ from smi_lab.paper import (
     load_allocation_strategy,
     update_forward_tracking,
 )
+from smi_lab.position_planner import build_rebalance_plan
 from smi_lab.technical import summarize_universe
 
 
@@ -65,6 +67,7 @@ ACCOUNTS_FILE = ACCOUNT_DIR / "accounts.csv"
 POSITIONS_FILE = ACCOUNT_DIR / "positions.csv"
 ORDERS_FILE = ACCOUNT_DIR / "orders.csv"
 NEWS_FILE = OUTPUT_DIR / "news" / "market_news.json"
+BROKER_IMPORT_DIR = DEFAULT_IMPORT_DIR
 
 
 st.set_page_config(
@@ -404,6 +407,40 @@ def plot_positions(positions: pd.DataFrame) -> go.Figure:
         title="Position Market Value",
         template="plotly_dark",
         height=330,
+        margin=dict(l=10, r=10, t=45, b=10),
+    )
+    return fig
+
+
+def plot_rebalance_plan(plan: pd.DataFrame) -> go.Figure:
+    data = plan.copy() if not plan.empty else pd.DataFrame()
+    if data.empty:
+        data = pd.DataFrame({"symbol": [], "current_value": [], "target_value": []})
+    data = data[data["symbol"].astype(str) != "CASH"]
+    data["current_value"] = pd.to_numeric(data.get("current_value", 0.0), errors="coerce").fillna(0.0)
+    data["target_value"] = pd.to_numeric(data.get("target_value", 0.0), errors="coerce").fillna(0.0)
+    fig = go.Figure()
+    fig.add_trace(
+        go.Bar(
+            x=data["symbol"].astype(str),
+            y=data["current_value"],
+            name="Current",
+            marker_color="#64748b",
+        )
+    )
+    fig.add_trace(
+        go.Bar(
+            x=data["symbol"].astype(str),
+            y=data["target_value"],
+            name="Target",
+            marker_color="#38bdf8",
+        )
+    )
+    fig.update_layout(
+        title="Current vs Strategy Target Value",
+        barmode="group",
+        template="plotly_dark",
+        height=340,
         margin=dict(l=10, r=10, t=45, b=10),
     )
     return fig
@@ -1029,8 +1066,8 @@ elif page == "Accounts":
         "Account & Order Tracking",
         "Pionex crypto account tracking, Cathay Taiwan securities tracking, and Firstrade U.S. brokerage tracking. This app records state; it does not place live orders yet.",
     )
-    account_tab, position_tab, order_tab, integration_tab = st.tabs(
-        ["Account Snapshots", "Positions", "Order Tracker", "Broker Integration Plan"]
+    account_tab, position_tab, planner_tab, order_tab, integration_tab = st.tabs(
+        ["Account Snapshots", "Positions", "Position Planner", "Order Tracker", "Broker Integration Plan"]
     )
     with account_tab:
         st.subheader("Save account snapshot")
@@ -1073,7 +1110,25 @@ elif page == "Accounts":
             with st.expander("Account table"):
                 st.dataframe(accounts, hide_index=True, width="stretch")
     with position_tab:
-        st.subheader("Track manual positions")
+        st.subheader("Automated position sync")
+        st.caption(
+            f"Drop Firstrade or Cathay CSV exports into `{BROKER_IMPORT_DIR}`. "
+            "The importer auto-detects broker columns and updates tracked positions."
+        )
+        sync_cols = st.columns([1, 2])
+        with sync_cols[0]:
+            if st.button("Sync broker exports", type="primary"):
+                positions, report = sync_broker_exports(
+                    import_dir=BROKER_IMPORT_DIR,
+                    positions_path=POSITIONS_FILE,
+                )
+                st.session_state["broker_import_report"] = report
+                st.success(f"Synced {len(positions)} tracked positions.")
+        report = st.session_state.get("broker_import_report")
+        if report is not None and not report.empty:
+            st.dataframe(report, hide_index=True, width="stretch")
+        st.divider()
+        st.subheader("Manual position override")
         col_a, col_b, col_c = st.columns(3)
         market = col_a.selectbox("Position market", ["crypto", "tw", "us"], index=0)
         broker = col_b.text_input(
@@ -1112,6 +1167,131 @@ elif page == "Accounts":
             st.plotly_chart(plot_positions(positions), width="stretch")
             with st.expander("Position table"):
                 st.dataframe(positions, hide_index=True, width="stretch")
+    with planner_tab:
+        st.subheader("Automated position planner")
+        st.caption(
+            "Generate target orders from the current crypto allocation strategy and tracked holdings. "
+            "The app writes planned orders only; live execution remains disabled."
+        )
+        accounts = load_table(ACCOUNTS_FILE, ACCOUNT_COLUMNS)
+        positions = load_table(POSITIONS_FILE, POSITION_COLUMNS)
+        crypto_accounts = accounts[accounts["market"].astype(str) == "crypto"] if not accounts.empty else pd.DataFrame()
+        account_options = crypto_accounts["account_id"].dropna().astype(str).tolist() if not crypto_accounts.empty else []
+        selected_account = st.selectbox(
+            "Planning account",
+            account_options or ["pionex-live-main"],
+            index=0,
+        )
+        planner_cols = st.columns(2)
+        equity_override = planner_cols[0].number_input(
+            "Portfolio equity override",
+            min_value=0.0,
+            value=0.0,
+            step=100.0,
+            help="Use this when no account snapshot is saved yet.",
+        )
+        min_trade_value = planner_cols[1].number_input("Minimum trade value", min_value=0.0, value=25.0, step=5.0)
+        if st.button("Generate crypto position plan", type="primary"):
+            try:
+                planning_accounts = accounts
+                if equity_override > 0:
+                    override_row = pd.DataFrame(
+                        [
+                            {
+                                "account_id": selected_account,
+                                "broker": "Pionex",
+                                "market": "crypto",
+                                "currency": "USDT",
+                                "cash": 0.0,
+                                "equity": equity_override,
+                                "updated_at": "planner_override",
+                                "notes": "Temporary planner equity override.",
+                            }
+                        ]
+                    )
+                    planning_accounts = pd.concat([accounts, override_row], ignore_index=True)
+                universe = load_crypto_data(crypto_symbols, crypto_interval, crypto_bars, refresh_crypto)
+                config, offsets, _ = load_allocation_strategy()
+                snapshot = allocation_snapshot(universe, config, offsets)
+                allocation = aggregate_snapshot(snapshot)
+                price_lookup = {
+                    symbol: float(frame["close"].iloc[-1])
+                    for symbol, frame in universe.items()
+                    if not frame.empty
+                }
+                plan = build_rebalance_plan(
+                    planning_accounts,
+                    positions,
+                    allocation,
+                    "crypto",
+                    account_id=selected_account,
+                    price_lookup=price_lookup,
+                    min_trade_value=min_trade_value,
+                )
+                enriched = plan.copy()
+                if not enriched.empty:
+                    enriched["entry_trigger"] = None
+                    enriched["stop_loss"] = None
+                    enriched["take_profit_1"] = None
+                    enriched["take_profit_2"] = None
+                    for idx, row in enriched.iterrows():
+                        symbol = str(row["symbol"])
+                        if symbol in universe and str(row["side"]) == "BUY":
+                            trade_plan = crypto_strategy_plan(
+                                symbol,
+                                universe[symbol],
+                                float(row["target_weight"]),
+                            )
+                            levels = trade_plan["levels"]
+                            enriched.at[idx, "entry_trigger"] = trade_plan["entry_trigger"]
+                            enriched.at[idx, "stop_loss"] = levels.get("Stop Loss")
+                            enriched.at[idx, "take_profit_1"] = levels.get("TP1")
+                            enriched.at[idx, "take_profit_2"] = levels.get("TP2")
+                st.session_state["position_plan"] = enriched
+                st.success("Position plan generated.")
+            except Exception as exc:  # pragma: no cover - Streamlit displays runtime data issues.
+                st.error(f"Position plan failed: {exc}")
+        plan = st.session_state.get("position_plan")
+        if isinstance(plan, pd.DataFrame) and not plan.empty:
+            st.plotly_chart(plot_rebalance_plan(plan), width="stretch")
+            cols = st.columns(3)
+            actionable = plan[plan["side"].isin(["BUY", "SELL"])]
+            actionable_delta = pd.to_numeric(actionable["delta_value"], errors="coerce").fillna(0.0)
+            cols[0].metric("Actionable orders", len(actionable))
+            cols[1].metric("Buy value", money(actionable_delta[actionable["side"] == "BUY"].sum()))
+            cols[2].metric("Sell value", money(abs(actionable_delta[actionable["side"] == "SELL"].sum())))
+            st.dataframe(plan, hide_index=True, width="stretch")
+            if st.button("Append planned orders to tracker"):
+                appended = 0
+                for row in actionable.to_dict("records"):
+                    symbol = str(row["symbol"])
+                    if symbol == "CASH":
+                        continue
+                    quantity_value = safe_float(row.get("order_quantity"))
+                    if quantity_value <= 0:
+                        continue
+                    entry = safe_float(row.get("entry_trigger"), safe_float(row.get("reference_price")))
+                    orders = append_order(
+                        ORDERS_FILE,
+                        OrderTracker(
+                            account_id=str(row["account_id"]),
+                            broker="Pionex",
+                            market="crypto",
+                            symbol=symbol,
+                            company=company_name(symbol),
+                            side=str(row["side"]),
+                            status="PLANNED",
+                            quantity=quantity_value,
+                            entry_price=entry,
+                            stop_loss=safe_float(row.get("stop_loss")),
+                            take_profit_1=safe_float(row.get("take_profit_1")),
+                            take_profit_2=safe_float(row.get("take_profit_2")),
+                            strategy="market_alpha_staggered_position_plan",
+                            notes=str(row.get("notes", "")),
+                        ),
+                    )
+                    appended = len(orders)
+                st.success(f"Order tracker updated. Total rows: {appended}.")
     with order_tab:
         st.subheader("Crypto order tracker")
         st.info("Pionex live execution is intentionally disabled until API keys, canary limits, and kill-switch rules are configured outside Git.")
@@ -1182,23 +1362,23 @@ elif page == "Accounts":
         st.subheader("How to track FT and Cathay holdings")
         col_a, col_b, col_c = st.columns(3)
         with col_a:
-            metric_card("Firstrade", "CSV first", "Use exported positions until a stable API path exists.")
+            metric_card("Firstrade", "Auto CSV sync", "Drop exports into data/broker_imports.")
             st.markdown(
                 """
-                - Export positions / account value from Firstrade.
-                - Normalize to `symbol`, `quantity`, `average_price`, `current_price`.
-                - Import into this app as a manual position snapshot.
-                - Later phase: browser-assisted statement download if you want semi-automation.
+                - Export positions / account value from Firstrade as CSV.
+                - Place the file under `data/broker_imports/firstrade/`.
+                - Click `Sync broker exports`; the app maps common Firstrade columns automatically.
+                - Next phase: add browser-assisted download after you confirm the exported file format.
                 """
             )
         with col_b:
-            metric_card("Cathay", "CSV / statement", "Taiwan brokers usually need statement import or manual sync.")
+            metric_card("Cathay", "Auto CSV sync", "Taiwan symbols are normalized to `.TW`.")
             st.markdown(
                 """
-                - Export holdings from Cathay Securities when available.
-                - Map local symbols to Yahoo format such as `2330.TW`.
-                - Keep order execution manual as requested.
-                - Later phase: add a guided import template for Cathay-specific column names.
+                - Export holdings from Cathay Securities as CSV or a spreadsheet saved as CSV.
+                - Place the file under `data/broker_imports/cathay/`.
+                - Numeric symbols such as `2330` become `2330.TW` automatically.
+                - Stock orders remain manual; the app handles position tracking and reconciliation.
                 """
             )
         with col_c:
@@ -1211,7 +1391,7 @@ elif page == "Accounts":
                 """
             )
         st.info(
-            "Recommended next build step: add a CSV importer with broker presets for Firstrade and Cathay, then reconcile imported positions against strategy targets."
+            "Current workflow: sync broker exports, generate a strategy position plan, then append planned orders for manual review or later API execution."
         )
 
 elif page == "Research":

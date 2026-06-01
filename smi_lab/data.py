@@ -14,11 +14,18 @@ import pandas as pd
 DEFAULT_SYMBOLS = ("BTCUSDT", "ETHUSDT", "DOGEUSDT", "SOLUSDT")
 API_BASE = "https://data-api.binance.vision"
 FUTURES_API_BASE = "https://fapi.binance.com"
+BYBIT_API_BASE = "https://api.bybit.com"
 INTERVAL_MS = {
     "15m": 15 * 60 * 1000,
     "1h": 60 * 60 * 1000,
     "4h": 4 * 60 * 60 * 1000,
     "1d": 24 * 60 * 60 * 1000,
+}
+BYBIT_INTERVALS = {
+    "15m": "15",
+    "1h": "60",
+    "4h": "240",
+    "1d": "D",
 }
 DEFAULT_RESEARCH_YEARS = 5
 KLINE_COLUMNS = [
@@ -62,6 +69,18 @@ def _request_json(
     return payload
 
 
+def _request_url_json(url: str, params: dict[str, object]) -> object:
+    request = Request(
+        f"{url}?{urlencode(params)}",
+        headers={"User-Agent": "smi-signal-lab/1.0"},
+    )
+    try:
+        with urlopen(request, timeout=20) as response:
+            return json.load(response)
+    except (HTTPError, URLError, TimeoutError) as exc:
+        raise RuntimeError(f"Market data request failed for {url}: {exc}") from exc
+
+
 def _as_frame(rows: list[list[object]]) -> pd.DataFrame:
     if not rows:
         return pd.DataFrame(columns=KLINE_COLUMNS)
@@ -72,6 +91,70 @@ def _as_frame(rows: list[list[object]]) -> pd.DataFrame:
     frame["close_time"] = pd.to_datetime(frame["close_time"], unit="ms", utc=True)
     frame = frame.set_index("open_time").sort_index()
     return frame[["open", "high", "low", "close", "volume", "close_time"]]
+
+
+def _bybit_frame(rows: list[list[object]]) -> pd.DataFrame:
+    if not rows:
+        return pd.DataFrame(columns=["open", "high", "low", "close", "volume", "close_time"])
+    frame = pd.DataFrame(rows, columns=["open_time", "open", "high", "low", "close", "volume", "turnover"])
+    for column in ("open", "high", "low", "close", "volume", "turnover"):
+        frame[column] = pd.to_numeric(frame[column], errors="coerce")
+    frame["open_time"] = pd.to_datetime(pd.to_numeric(frame["open_time"]), unit="ms", utc=True)
+    frame = frame.set_index("open_time").sort_index()
+    if len(frame.index) >= 2:
+        interval = frame.index[1] - frame.index[0]
+    else:
+        interval = pd.Timedelta(0)
+    frame["close_time"] = frame.index + interval - pd.Timedelta(milliseconds=1)
+    return frame[["open", "high", "low", "close", "volume", "close_time"]]
+
+
+def fetch_bybit_linear_klines(
+    symbol: str,
+    interval: str,
+    bars: int,
+    end_time_ms: int | None = None,
+) -> pd.DataFrame:
+    if interval not in BYBIT_INTERVALS:
+        raise ValueError(f"Unsupported Bybit interval: {interval}")
+    interval_ms = INTERVAL_MS[interval]
+    requested_end = end_time_ms or int(time.time() * 1000)
+    rows: list[list[object]] = []
+    cursor_end = requested_end
+    earliest_start = requested_end - (bars + 10) * interval_ms
+    while cursor_end > earliest_start and len(rows) < bars + 10:
+        cursor_start = max(earliest_start, cursor_end - 1000 * interval_ms)
+        payload = _request_url_json(
+            f"{BYBIT_API_BASE}/v5/market/kline",
+            {
+                "category": "linear",
+                "symbol": symbol.upper(),
+                "interval": BYBIT_INTERVALS[interval],
+                "start": cursor_start,
+                "end": cursor_end,
+                "limit": 1000,
+            },
+        )
+        if not isinstance(payload, dict) or payload.get("retCode") != 0:
+            raise RuntimeError(f"Bybit returned an API error: {payload}")
+        batch = payload.get("result", {}).get("list", [])
+        if not batch:
+            break
+        rows.extend(batch)
+        min_open = min(int(row[0]) for row in batch)
+        next_cursor_end = min_open - 1
+        if next_cursor_end >= cursor_end:
+            break
+        cursor_end = next_cursor_end
+        if len(batch) < 1000:
+            break
+    frame = _bybit_frame(rows)
+    if frame.empty:
+        raise RuntimeError(f"No Bybit candles returned for {symbol} {interval}.")
+    frame.attrs["data_source"] = "bybit_linear"
+    closed_before = pd.to_datetime(requested_end, unit="ms", utc=True)
+    frame = frame[frame["close_time"] < closed_before]
+    return frame[~frame.index.duplicated(keep="last")].tail(bars)
 
 
 def fetch_klines(
@@ -97,6 +180,7 @@ def fetch_klines(
     cursor = start_ms
 
     request_market = market
+    last_error: RuntimeError | None = None
     while cursor < requested_end and len(rows) < bars + 10:
         try:
             batch = _request_json(
@@ -110,15 +194,26 @@ def fetch_klines(
                 },
                 API_BASE if request_market == "spot" else FUTURES_API_BASE,
             )
-        except RuntimeError:
+        except RuntimeError as exc:
             if request_market != "perpetual":
                 raise
-            # Some regions return HTTP 451 for Binance futures endpoints.
-            # Spot candles are still usable for signal generation, while funding is optional.
-            request_market = "spot"
-            rows.clear()
-            cursor = start_ms
-            continue
+            last_error = exc
+            try:
+                frame = fetch_bybit_linear_klines(
+                    symbol,
+                    interval,
+                    bars,
+                    end_time_ms=requested_end,
+                )
+                frame.attrs["data_warning"] = f"Binance futures unavailable: {exc}"
+                return frame
+            except RuntimeError as bybit_exc:
+                last_error = bybit_exc
+                # Final fallback: spot candles preserve signal continuity but are not futures data.
+                request_market = "spot"
+                rows.clear()
+                cursor = start_ms
+                continue
         if not isinstance(batch, list):
             raise RuntimeError(f"Unexpected kline response for {symbol} {request_market}.")
         if not batch:
@@ -133,10 +228,14 @@ def fetch_klines(
 
     frame = _as_frame(rows)
     if frame.empty:
-        raise RuntimeError(f"No candles returned for {symbol} {interval}.")
+        raise RuntimeError(f"No candles returned for {symbol} {interval}: {last_error}")
     closed_before = pd.to_datetime(requested_end, unit="ms", utc=True)
     frame = frame[frame["close_time"] < closed_before]
-    return frame[~frame.index.duplicated(keep="last")].tail(bars)
+    frame = frame[~frame.index.duplicated(keep="last")].tail(bars)
+    frame.attrs["data_source"] = "binance_spot" if request_market == "spot" else "binance_futures"
+    if request_market == "spot" and market == "perpetual" and last_error is not None:
+        frame.attrs["data_warning"] = f"Perpetual endpoints unavailable, using spot candles: {last_error}"
+    return frame
 
 
 def cache_path(

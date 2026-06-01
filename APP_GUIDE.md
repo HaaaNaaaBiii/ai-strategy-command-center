@@ -16,7 +16,7 @@ This project ships as a Streamlit web app. It is cross-platform because it runs 
 
 The app currently records account state and order plans. It does not place live orders. Pionex execution should only be enabled after API keys, canary capital limits, max order size, daily loss limit, and kill-switch rules are configured outside Git.
 
-Cathay Securities and Firstrade are tracked manually by design. The app can record account equity, positions, and planned orders, but the actual stock orders remain user-executed.
+Cathay Securities and Firstrade execution remains manual by design. The app can now sync exported holding CSV files, record account equity, positions, and planned orders, but the actual stock orders remain user-executed.
 
 ## Strategy Signal Boundary
 
@@ -26,7 +26,7 @@ Entry prices are strategy trigger prices. The app does not use the latest close 
 
 ## Data Reliability
 
-Crypto data first attempts Binance USD-M perpetual candles. If that endpoint is blocked by region policy such as HTTP 451, the app falls back to Binance spot candles for signal generation and treats funding as unavailable instead of failing the page.
+Crypto data first attempts Binance USD-M perpetual candles. If that endpoint is blocked by region policy such as HTTP 451, the loader tries Bybit USDT perpetual candles before falling back to Binance spot candles. Bybit V5 candles are fetched backwards in pages, so one-to-five-year 4h backtests are not limited to the latest 1000 candles. The returned frame records the active source in `data_source`, and spot fallback carries a `data_warning` so the app can distinguish true perpetual data from a degraded source.
 
 Equity data first uses Yahoo Finance chart data. If Yahoo rate-limits with HTTP 429, the app returns usable cache when available and falls back to Stooq daily data for daily charts when no cache exists.
 
@@ -34,11 +34,31 @@ Dashboard news uses RSS feeds with a local cache. If all feeds are temporarily u
 
 ## Broker Holding Tracking Plan
 
-Firstrade holdings should be tracked with a CSV-first workflow because a stable public API is not assumed. Export positions/account value from Firstrade, normalize columns to `symbol`, `quantity`, `average_price`, and `current_price`, then import or manually enter them into the Accounts page.
+Firstrade holdings use an automated CSV-first workflow because a stable public API is not assumed. Export positions/account value from Firstrade, place the CSV under `data/broker_imports/firstrade/`, then click `Sync broker exports` on the Accounts page. The importer maps common English column names to `symbol`, `quantity`, `average_price`, `current_price`, `market_value`, and `unrealized_pnl`.
 
-Cathay Securities holdings should follow the same statement/CSV import approach. Local Taiwan symbols must be normalized to Yahoo-style symbols such as `2330.TW`. Stock execution remains manual, as requested.
+Cathay Securities holdings follow the same statement/CSV import approach. Place exported CSV files under `data/broker_imports/cathay/`; local Taiwan symbols such as `2330` are normalized to Yahoo-style symbols such as `2330.TW`. Stock execution remains manual, as requested.
 
 Pionex starts with account and order tracking. Live API execution should only be enabled after canary capital, max order size, daily loss limit, and kill-switch controls are implemented.
+
+The same sync can run from the terminal:
+
+```powershell
+.\.venv\Scripts\python.exe sync_holdings.py
+```
+
+The importer upserts by `account_id` and `symbol` into `outputs/accounts/positions.csv`, so repeated exports update existing holdings instead of duplicating them.
+
+## Automated Position Planning
+
+The Accounts page includes a `Position Planner` tab for crypto. It reads the latest account snapshot or a temporary portfolio equity override, tracked positions, current strategy target allocation, and latest prices, then calculates target value, current value, delta value, side, and estimated order quantity.
+
+Generated plans can be appended to the order tracker as `PLANNED` rows. The app still does not submit live Pionex orders; this keeps execution reviewable until API keys, canary sizing, daily loss limits, and a kill switch are configured.
+
+## Strategy Optimization Status
+
+The current crypto strategy was re-tested against a broader staggered trend allocation grid in `research_crypto_optimization.py`. Selection uses calibration and validation under triple trading costs, while holdout remains report-only to reduce overfitting.
+
+Latest optimization output is written to `outputs/crypto_optimization/`. The strongest candidate increased full-period return but carried materially worse drawdown and weaker holdout return than the current paper strategy, so the script keeps the current production candidate and records `recommendation: keep_current`.
 
 ## Start Locally
 

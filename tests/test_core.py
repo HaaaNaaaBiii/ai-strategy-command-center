@@ -4,6 +4,7 @@ import json
 import unittest
 from unittest.mock import patch
 from tempfile import TemporaryDirectory
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
@@ -15,7 +16,13 @@ from smi_lab.allocation import (
     backtest_trend_allocation,
 )
 from smi_lab.config import StrategyConfig, load_portfolio, save_portfolio
-from smi_lab.data import attach_funding_rates, bars_for_years, fetch_klines, get_klines
+from smi_lab.data import (
+    attach_funding_rates,
+    bars_for_years,
+    fetch_bybit_linear_klines,
+    fetch_klines,
+    get_klines,
+)
 from smi_lab.equity_data import fetch_yahoo_chart
 from smi_lab.evolution import _candidate_configs
 from smi_lab.accounts import (
@@ -27,6 +34,7 @@ from smi_lab.accounts import (
     load_table,
     upsert_account,
 )
+from smi_lab.broker_import import normalize_broker_positions, sync_broker_exports
 from smi_lab.equity_signals import add_company_names, build_equity_trade_plan
 from smi_lab.equity_strategy import (
     EquitySelectionConfig,
@@ -36,6 +44,7 @@ from smi_lab.equity_strategy import (
 )
 from smi_lab.market_info import cached_crypto_snapshots
 from smi_lab.paper import aggregate_snapshot, allocation_snapshot, update_forward_tracking
+from smi_lab.position_planner import build_rebalance_plan
 from smi_lab.regime import attach_btc_momentum_regime, attach_cboe_regime
 from smi_lab.rotation import RotationConfig, _rebalance_schedule, backtest_rotation
 from smi_lab.strategy import build_feature_frame
@@ -104,8 +113,11 @@ class StrategyTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             bars_for_years("4h", 6)
 
+    @patch("smi_lab.data._request_url_json", side_effect=RuntimeError("Bybit unavailable"))
     @patch("smi_lab.data._request_json")
-    def test_perpetual_klines_fall_back_to_spot_when_futures_blocked(self, request_json: object) -> None:
+    def test_perpetual_klines_fall_back_to_spot_when_futures_blocked(
+        self, request_json: object, _: object
+    ) -> None:
         rows = [
             [
                 1_700_000_000_000 + i * 14_400_000,
@@ -134,7 +146,71 @@ class StrategyTests(unittest.TestCase):
         )
 
         self.assertFalse(frame.empty)
+        self.assertEqual(frame.attrs["data_source"], "binance_spot")
         self.assertEqual(request_json.call_count, 2)
+
+    @patch("smi_lab.data._request_url_json")
+    @patch("smi_lab.data._request_json", side_effect=RuntimeError("HTTP Error 451"))
+    def test_perpetual_klines_use_bybit_before_spot_when_available(
+        self, _: object, request_url_json: object
+    ) -> None:
+        rows = [
+            [
+                str(1_700_000_000_000 + i * 14_400_000),
+                "100",
+                "101",
+                "99",
+                "100",
+                "1",
+                "1",
+            ]
+            for i in range(70)
+        ]
+        request_url_json.return_value = {"retCode": 0, "result": {"list": rows[::-1]}}
+
+        frame = fetch_klines(
+            "BTCUSDT",
+            interval="4h",
+            bars=50,
+            end_time_ms=1_700_000_000_000 + 80 * 14_400_000,
+            market="perpetual",
+        )
+
+        self.assertFalse(frame.empty)
+        self.assertEqual(frame.attrs["data_source"], "bybit_linear")
+
+    @patch("smi_lab.data._request_url_json")
+    def test_bybit_klines_page_backwards_for_long_history(self, request_url_json: object) -> None:
+        interval_ms = 14_400_000
+        base = 1_700_000_000_000
+
+        def row(i: int) -> list[str]:
+            return [
+                str(base + i * interval_ms),
+                "100",
+                "101",
+                "99",
+                "100",
+                "1",
+                "1",
+            ]
+
+        request_url_json.side_effect = [
+            {"retCode": 0, "result": {"list": [row(i) for i in range(205, 1205)][::-1]}},
+            {"retCode": 0, "result": {"list": [row(i) for i in range(95, 205)][::-1]}},
+        ]
+
+        frame = fetch_bybit_linear_klines(
+            "BTCUSDT",
+            interval="4h",
+            bars=1100,
+            end_time_ms=base + 1205 * interval_ms,
+        )
+
+        self.assertEqual(len(frame), 1100)
+        self.assertEqual(request_url_json.call_count, 2)
+        self.assertEqual(frame.index[0], pd.to_datetime(base + 105 * interval_ms, unit="ms", utc=True))
+        self.assertEqual(frame.index[-1], pd.to_datetime(base + 1204 * interval_ms, unit="ms", utc=True))
 
     @patch("smi_lab.equity_data._fetch_stooq_daily")
     @patch("smi_lab.equity_data._fetch_yahoo_payload", side_effect=RuntimeError("HTTP Error 429"))
@@ -684,6 +760,107 @@ class StrategyTests(unittest.TestCase):
             self.assertEqual(orders.iloc[0]["status"], "PLANNED")
             self.assertEqual(list(load_table(account_path, ACCOUNT_COLUMNS).columns), ACCOUNT_COLUMNS)
             self.assertEqual(list(load_table(order_path, ORDER_COLUMNS).columns), ORDER_COLUMNS)
+
+    def test_broker_import_normalizes_firstrade_csv(self) -> None:
+        with TemporaryDirectory() as directory:
+            path = f"{directory}/firstrade_positions.csv"
+            pd.DataFrame(
+                [
+                    {
+                        "Symbol": "AAPL",
+                        "Description": "Apple",
+                        "Quantity": "2",
+                        "Average Cost": "100",
+                        "Last Price": "110",
+                    }
+                ]
+            ).to_csv(path, index=False)
+            frame, report = normalize_broker_positions(path)
+
+        self.assertEqual(report.broker, "Firstrade")
+        self.assertEqual(frame.iloc[0]["symbol"], "AAPL")
+        self.assertEqual(float(frame.iloc[0]["market_value"]), 220.0)
+
+    def test_broker_sync_normalizes_cathay_csv(self) -> None:
+        with TemporaryDirectory() as directory:
+            import_dir = f"{directory}/imports/cathay"
+            Path(import_dir).mkdir(parents=True)
+            path = f"{import_dir}/國泰庫存.csv"
+            pd.DataFrame(
+                [
+                    {
+                        "股票代號": "2330",
+                        "股票名稱": "台積電",
+                        "庫存股數": "10",
+                        "平均成本": "500",
+                        "現價": "550",
+                    }
+                ]
+            ).to_csv(path, index=False, encoding="utf-8-sig")
+            positions_path = f"{directory}/positions.csv"
+            positions, report = sync_broker_exports(f"{directory}/imports", positions_path)
+
+        self.assertEqual(report.iloc[0]["broker"], "Cathay Securities")
+        self.assertEqual(positions.iloc[0]["symbol"], "2330.TW")
+        self.assertEqual(float(positions.iloc[0]["market_value"]), 5500.0)
+
+    def test_rebalance_plan_generates_buy_and_sell_intents(self) -> None:
+        accounts = pd.DataFrame(
+            [
+                {
+                    "account_id": "pionex-main",
+                    "broker": "Pionex",
+                    "market": "crypto",
+                    "currency": "USDT",
+                    "cash": 8000.0,
+                    "equity": 10000.0,
+                }
+            ]
+        )
+        positions = pd.DataFrame(
+            [
+                {
+                    "account_id": "pionex-main",
+                    "market": "crypto",
+                    "symbol": "BTCUSDT",
+                    "quantity": 0.02,
+                    "current_price": 50000.0,
+                    "market_value": 1000.0,
+                },
+                {
+                    "account_id": "pionex-main",
+                    "market": "crypto",
+                    "symbol": "DOGEUSDT",
+                    "quantity": 1000.0,
+                    "current_price": 0.2,
+                    "market_value": 200.0,
+                },
+            ]
+        )
+        targets = pd.DataFrame(
+            [
+                {"asset": "BTCUSDT", "target_weight": 0.35},
+                {"asset": "CASH", "target_weight": 0.65},
+            ]
+        )
+
+        plan = build_rebalance_plan(
+            accounts,
+            positions,
+            targets,
+            "crypto",
+            account_id="pionex-main",
+            price_lookup={"BTCUSDT": 50000.0, "DOGEUSDT": 0.2},
+            min_trade_value=10.0,
+        )
+
+        btc = plan[plan["symbol"] == "BTCUSDT"].iloc[0]
+        doge = plan[plan["symbol"] == "DOGEUSDT"].iloc[0]
+        self.assertEqual(btc["side"], "BUY")
+        self.assertAlmostEqual(float(btc["delta_value"]), 2500.0)
+        self.assertAlmostEqual(float(btc["order_quantity"]), 0.05)
+        self.assertEqual(doge["side"], "SELL")
+        self.assertAlmostEqual(float(doge["order_quantity"]), 1000.0)
 
     def test_cached_market_snapshot_uses_local_crypto_cache(self) -> None:
         index = pd.date_range("2025-01-01", periods=8, freq="4h", tz="UTC", name="open_time")
