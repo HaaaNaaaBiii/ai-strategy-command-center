@@ -2,6 +2,15 @@
 
 This project ships as a Streamlit web app. It is cross-platform because it runs in a browser on Windows, macOS, Linux, iOS, and Android.
 
+## What This App Provides
+
+- Crypto Strategy: BTC, ETH, DOGE, SOL technical view, allocation snapshot, and notification controls.
+- Forward Paper Tracking: paper equity, benchmark comparison, drawdown, data freshness, and live-readiness blockers.
+- Taiwan Stocks: Taiwan market ranking and strategy backtest versus 0050.TW.
+- U.S. Stocks: U.S. market ranking and strategy backtest versus SPY.
+- Strategy Architecture: design rules, market-specific assumptions, and deployment stages.
+- Records: generated CSV/JSON outputs for audit and review.
+
 ## Start Locally
 
 ```powershell
@@ -14,20 +23,41 @@ Open:
 http://localhost:8501
 ```
 
+The current local deployment command uses port `8501` and binds to `0.0.0.0`, as configured in `.streamlit/config.toml`.
+
 For mobile on the same Wi-Fi network, open the LAN URL printed by Streamlit, for example:
 
 ```text
 http://192.168.x.x:8501
 ```
 
-## Pages
+For this machine, the current LAN URL is:
 
-- Crypto Strategy: current crypto technical view, allocation snapshot, and notification send-out.
-- Forward Paper Tracking: live-readiness gates, paper equity, benchmark comparison, and blockers.
-- Taiwan Stocks: TW stock technical summary, market-adjusted ranking, and backtest versus 0050.TW.
-- U.S. Stocks: U.S. stock technical summary, market-adjusted ranking, and backtest versus SPY.
-- Strategy Architecture: design rules and deployment stages.
-- Records: generated CSV/JSON outputs.
+```text
+http://192.168.1.108:8501
+```
+
+This LAN URL only works when the phone and computer are on the same local network, and the firewall allows inbound traffic on port `8501`.
+
+## Streamlit Community Cloud Deployment
+
+Streamlit Community Cloud deploys from a GitHub repository. The required settings for this project are:
+
+- Repository: the GitHub repository that contains this project.
+- Branch: `master`, unless you rename it to `main`.
+- Main file path: `app.py`.
+- Python version: `3.12`.
+- Dependencies: `requirements.txt`.
+
+Deployment flow:
+
+1. Push this repository to GitHub.
+2. Open `https://share.streamlit.io`.
+3. Create a new app from an existing GitHub repository.
+4. Select the repo, branch, and `app.py`.
+5. Deploy.
+
+The app does not require API keys for public market data. If Discord or Telegram notifications are used in a hosted deployment, configure those webhook/token values as Streamlit secrets instead of committing them to Git.
 
 ## Deployment Note
 
