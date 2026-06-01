@@ -56,11 +56,17 @@ This LAN URL only works when the phone and computer are on the same local networ
 
 Streamlit Community Cloud deploys from a GitHub repository. The required settings for this project are:
 
-- Repository: the GitHub repository that contains this project.
-- Branch: `master`, unless you rename it to `main`.
+- Repository: `https://github.com/HaaaNaaaBiii/ai-strategy-command-center`.
+- Branch: `master`.
 - Main file path: `app.py`.
 - Python version: `3.12`.
 - Dependencies: `requirements.txt`.
+
+Prefilled deployment URL:
+
+```text
+https://share.streamlit.io/deploy?owner=HaaaNaaaBiii&repo=ai-strategy-command-center&branch=master&mainModule=app.py
+```
 
 Deployment flow:
 
