@@ -36,12 +36,14 @@ from smi_lab.accounts import (
 )
 from smi_lab.broker_import import normalize_broker_positions, sync_broker_exports
 from smi_lab.equity_signals import add_company_names, build_equity_trade_plan
+from smi_lab.equity_scanner import build_scan_recommendations
 from smi_lab.equity_strategy import (
     EquitySelectionConfig,
     backtest_equity_selection,
     benchmark_buy_and_hold,
     rank_equities,
 )
+from smi_lab.equity_universe import equity_scan_symbols
 from smi_lab.market_info import cached_crypto_snapshots
 from smi_lab.paper import aggregate_snapshot, allocation_snapshot, update_forward_tracking
 from smi_lab.position_planner import build_rebalance_plan
@@ -721,6 +723,37 @@ class StrategyTests(unittest.TestCase):
         self.assertLess(plan.stop_loss, plan.entry_price)
         self.assertGreater(plan.take_profit_1, plan.entry_price)
         self.assertGreater(plan.take_profit_2, plan.take_profit_1)
+
+    def test_equity_scanner_builds_strategy_recommendations(self) -> None:
+        index = pd.date_range("2025-01-01", periods=260, freq="1D", tz="UTC")
+        market = pd.Series(np.linspace(100, 140, len(index)), index=index)
+        strong = pd.Series(np.linspace(100, 230, len(index)), index=index)
+        second = pd.Series(np.linspace(100, 190, len(index)), index=index)
+        weak = pd.Series(np.linspace(100, 105, len(index)), index=index)
+        universe = {
+            "SPY": pd.DataFrame({"open": market, "high": market + 1, "low": market - 1, "close": market}, index=index),
+            "AAPL": pd.DataFrame({"open": strong, "high": strong + 1, "low": strong - 1, "close": strong}, index=index),
+            "MSFT": pd.DataFrame({"open": second, "high": second + 1, "low": second - 1, "close": second}, index=index),
+            "WEAK": pd.DataFrame({"open": weak, "high": weak + 1, "low": weak - 1, "close": weak}, index=index),
+        }
+        config = EquitySelectionConfig(
+            market_symbol="SPY",
+            top_n=2,
+            rebalance_bars=20,
+            short_momentum_period=20,
+            long_momentum_period=60,
+            trend_period=80,
+            fee_bps=0.0,
+            slippage_bps=0.0,
+        )
+
+        ranking, recommendations, metrics = build_scan_recommendations(universe, config)
+
+        self.assertEqual(recommendations["symbol"].tolist(), ["AAPL", "MSFT"])
+        self.assertTrue((recommendations["action"] == "WAIT_FOR_BREAKOUT").all())
+        self.assertIn("score", recommendations.columns)
+        self.assertIn("equity_selection_scan", set(metrics["strategy"]))
+        self.assertIn("2330.TW", equity_scan_symbols("tw"))
 
     def test_account_tables_upsert_and_append(self) -> None:
         with TemporaryDirectory() as directory:

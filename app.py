@@ -39,6 +39,7 @@ from smi_lab.equity_strategy import (
     default_equity_config,
     rank_equities,
 )
+from smi_lab.equity_universe import equity_scan_symbols
 from smi_lab.indicators import atr, ema
 from smi_lab.market_info import (
     cached_crypto_snapshots,
@@ -62,6 +63,7 @@ OUTPUT_DIR = Path("outputs")
 MARKET_ALPHA_DIR = OUTPUT_DIR / "market_alpha_staggered"
 TRACKING_DIR = OUTPUT_DIR / "forward_tracking"
 EQUITY_SELECTION_DIR = OUTPUT_DIR / "equity_selection"
+EQUITY_SCAN_DIR = OUTPUT_DIR / "equity_scan"
 ACCOUNT_DIR = OUTPUT_DIR / "accounts"
 ACCOUNTS_FILE = ACCOUNT_DIR / "accounts.csv"
 POSITIONS_FILE = ACCOUNT_DIR / "positions.csv"
@@ -911,11 +913,51 @@ elif page == "Stocks":
 
     def render_equity_page(title: str, market: str, defaults: tuple[str, ...]) -> None:
         config = default_equity_config(market)
+        scan_recommendations = read_csv_or_empty(EQUITY_SCAN_DIR / f"{market}_recommendations.csv")
+        scan_ranking = read_csv_or_empty(EQUITY_SCAN_DIR / f"{market}_scan_ranking.csv")
+        scan_summary = read_json_or_empty(EQUITY_SCAN_DIR / f"{market}_scan_summary.json")
+        st.subheader("Latest Strategy Scan")
+        if scan_summary:
+            cols = st.columns(4)
+            cols[0].metric("Scan status", str(scan_summary.get("status", "Unknown")))
+            cols[1].metric("Loaded", str(scan_summary.get("loaded_symbols", "-")))
+            cols[2].metric("Eligible", str(scan_summary.get("eligible_symbols", "-")))
+            cols[3].metric("Updated UTC", str(scan_summary.get("scan_time_utc", "-"))[:19])
+        if not scan_recommendations.empty:
+            st.plotly_chart(
+                plot_ranking(scan_recommendations, f"{title}: Current Recommended Entries"),
+                width="stretch",
+            )
+            display_cols = [
+                column
+                for column in (
+                    "symbol",
+                    "company",
+                    "action",
+                    "rank",
+                    "score",
+                    "close",
+                    "entry_price",
+                    "stop_loss",
+                    "take_profit_1",
+                    "take_profit_2",
+                    "reason",
+                )
+                if column in scan_recommendations
+            ]
+            st.dataframe(scan_recommendations[display_cols], hide_index=True, width="stretch")
+        else:
+            st.info("No hourly scan output yet. Run `scan_equity_signals.py` or wait for the hourly automation.")
+        with st.expander("Latest full scan ranking", expanded=False):
+            if scan_ranking.empty:
+                st.caption("No scan ranking file exists yet.")
+            else:
+                st.dataframe(scan_ranking.head(80), hide_index=True, width="stretch")
         with st.expander(f"{title} data controls", expanded=False):
             symbols_text = st.text_area(
                 "Universe",
                 value="\n".join(defaults),
-                height=130,
+                height=180,
                 key=f"{market}_symbols",
             )
             col_a, col_b, col_c = st.columns(3)
@@ -1057,9 +1099,9 @@ elif page == "Stocks":
 
     tw_tab, us_tab = st.tabs(["Taiwan Stocks", "U.S. Stocks"])
     with tw_tab:
-        render_equity_page("Taiwan Stocks", "tw", DEFAULT_TW_SYMBOLS)
+        render_equity_page("Taiwan Stocks", "tw", equity_scan_symbols("tw"))
     with us_tab:
-        render_equity_page("U.S. Stocks", "us", DEFAULT_US_SYMBOLS)
+        render_equity_page("U.S. Stocks", "us", equity_scan_symbols("us"))
 
 elif page == "Accounts":
     hero(
@@ -1463,6 +1505,16 @@ elif page == "Records":
         EQUITY_SELECTION_DIR / "us_strategy_metadata.json",
         EQUITY_SELECTION_DIR / "us_rebalances.csv",
         EQUITY_SELECTION_DIR / "us_equity.csv",
+        EQUITY_SCAN_DIR / "latest_scan_summary.json",
+        EQUITY_SCAN_DIR / "latest_recommendations.csv",
+        EQUITY_SCAN_DIR / "tw_scan_ranking.csv",
+        EQUITY_SCAN_DIR / "tw_recommendations.csv",
+        EQUITY_SCAN_DIR / "tw_scan_metrics.csv",
+        EQUITY_SCAN_DIR / "tw_scan_failures.csv",
+        EQUITY_SCAN_DIR / "us_scan_ranking.csv",
+        EQUITY_SCAN_DIR / "us_recommendations.csv",
+        EQUITY_SCAN_DIR / "us_scan_metrics.csv",
+        EQUITY_SCAN_DIR / "us_scan_failures.csv",
         ACCOUNTS_FILE,
         POSITIONS_FILE,
         ORDERS_FILE,

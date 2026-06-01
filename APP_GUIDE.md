@@ -54,6 +54,18 @@ The Accounts page includes a `Position Planner` tab for crypto. It reads the lat
 
 Generated plans can be appended to the order tracker as `PLANNED` rows. The app still does not submit live Pionex orders; this keeps execution reviewable until API keys, canary sizing, daily loss limits, and a kill switch are configured.
 
+## Equity Strategy Scan
+
+The stock page now treats the earlier small Taiwan/U.S. lists as seed watchlists, not final recommendations. `scan_equity_signals.py` scans broader liquid Taiwan and U.S. universes, ranks symbols with the strategy, and writes current recommendations to `outputs/equity_scan/`.
+
+Run manually:
+
+```powershell
+.\.venv\Scripts\python.exe scan_equity_signals.py --market both --interval 1d --range 2y --top 5 --refresh
+```
+
+The Codex app also has an active hourly automation named `Hourly equity strategy scan` that runs the same scan and updates the recommendation files.
+
 ## Strategy Optimization Status
 
 The current crypto strategy was re-tested against a broader staggered trend allocation grid in `research_crypto_optimization.py`. Selection uses calibration and validation under triple trading costs, while holdout remains report-only to reduce overfitting.

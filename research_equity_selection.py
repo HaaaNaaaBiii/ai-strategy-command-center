@@ -6,13 +6,14 @@ from pathlib import Path
 
 import pandas as pd
 
-from smi_lab.equity_data import DEFAULT_TW_SYMBOLS, DEFAULT_US_SYMBOLS, load_equity_universe
+from smi_lab.equity_data import load_equity_universe
 from smi_lab.equity_strategy import (
     backtest_equity_selection,
     benchmark_buy_and_hold,
     default_equity_config,
     rank_equities,
 )
+from smi_lab.equity_universe import equity_scan_symbols
 
 
 OUTPUT_DIR = Path("outputs/equity_selection")
@@ -29,8 +30,7 @@ def parser() -> argparse.ArgumentParser:
 
 def run_market(market: str, interval: str, range_: str, refresh: bool) -> None:
     config = default_equity_config(market)
-    defaults = DEFAULT_TW_SYMBOLS if market == "tw" else DEFAULT_US_SYMBOLS
-    symbols = list(dict.fromkeys([*defaults, config.market_symbol]))
+    symbols = list(dict.fromkeys([*equity_scan_symbols(market), config.market_symbol]))
     universe = load_equity_universe(
         symbols,
         market=market,
