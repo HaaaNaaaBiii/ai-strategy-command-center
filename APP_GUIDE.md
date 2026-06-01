@@ -4,12 +4,19 @@ This project ships as a Streamlit web app. It is cross-platform because it runs 
 
 ## What This App Provides
 
-- Crypto Strategy: BTC, ETH, DOGE, SOL technical view, allocation snapshot, and notification controls.
-- Forward Paper Tracking: paper equity, benchmark comparison, drawdown, data freshness, and live-readiness blockers.
-- Taiwan Stocks: Taiwan market ranking and strategy backtest versus 0050.TW.
-- U.S. Stocks: U.S. market ranking and strategy backtest versus SPY.
-- Strategy Architecture: design rules, market-specific assumptions, and deployment stages.
+- Dashboard: high-level crypto live-readiness, paper tracking, and equity strategy status.
+- Crypto: signal center, forward paper tracking, candlestick chart levels, and notification controls.
+- Stocks: Taiwan and U.S. strategy ranking, company names, selectable candlestick charts, entry/exit/SL/TP levels, and benchmark comparison.
+- Accounts: Pionex crypto account tracking, Cathay Securities Taiwan stock tracking, Firstrade U.S. stock tracking, position records, and order tracking.
+- Research: current optimization stance and generated research files.
 - Records: generated CSV/JSON outputs for audit and review.
+- Deployment: local URLs and Streamlit Cloud deployment settings.
+
+## Live Trading Boundary
+
+The app currently records account state and order plans. It does not place live orders. Pionex execution should only be enabled after API keys, canary capital limits, max order size, daily loss limit, and kill-switch rules are configured outside Git.
+
+Cathay Securities and Firstrade are tracked manually by design. The app can record account equity, positions, and planned orders, but the actual stock orders remain user-executed.
 
 ## Start Locally
 
