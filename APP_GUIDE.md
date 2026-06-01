@@ -4,7 +4,7 @@ This project ships as a Streamlit web app. It is cross-platform because it runs 
 
 ## What This App Provides
 
-- Dashboard: graphical crypto live-readiness, paper tracking, and equity strategy status.
+- Dashboard: market snapshot, news, crypto live-readiness, and tracked account/position status.
 - Crypto: signal center, forward paper tracking, allocation donut chart, candlestick chart levels, and notification controls.
 - Stocks: Taiwan and U.S. strategy ranking charts, company names, selectable candlestick charts, entry/exit/SL/TP levels, and benchmark comparison.
 - Accounts: Pionex crypto account tracking, Cathay Securities Taiwan stock tracking, Firstrade U.S. stock tracking, position records, and order tracking.
@@ -23,6 +23,22 @@ Cathay Securities and Firstrade are tracked manually by design. The app can reco
 The strategy supports cash/no-trade states. `HOLD_CASH` and `HOLD_CASH_OR_EXIT` are valid outputs, not errors.
 
 Entry prices are strategy trigger prices. The app does not use the latest close as a recommended entry. For selected assets, the entry waits for a breakout trigger derived from recent highs, trend level, and ATR. Stop loss and TP levels are then calculated from that trigger price.
+
+## Data Reliability
+
+Crypto data first attempts Binance USD-M perpetual candles. If that endpoint is blocked by region policy such as HTTP 451, the app falls back to Binance spot candles for signal generation and treats funding as unavailable instead of failing the page.
+
+Equity data first uses Yahoo Finance chart data. If Yahoo rate-limits with HTTP 429, the app returns usable cache when available and falls back to Stooq daily data for daily charts when no cache exists.
+
+Dashboard news uses RSS feeds with a local cache. If all feeds are temporarily unavailable, the app keeps the page alive and shows the latest cached items when present.
+
+## Broker Holding Tracking Plan
+
+Firstrade holdings should be tracked with a CSV-first workflow because a stable public API is not assumed. Export positions/account value from Firstrade, normalize columns to `symbol`, `quantity`, `average_price`, and `current_price`, then import or manually enter them into the Accounts page.
+
+Cathay Securities holdings should follow the same statement/CSV import approach. Local Taiwan symbols must be normalized to Yahoo-style symbols such as `2330.TW`. Stock execution remains manual, as requested.
+
+Pionex starts with account and order tracking. Live API execution should only be enabled after canary capital, max order size, daily loss limit, and kill-switch controls are implemented.
 
 ## Start Locally
 

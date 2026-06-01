@@ -96,20 +96,31 @@ def fetch_klines(
     rows: list[list[object]] = []
     cursor = start_ms
 
+    request_market = market
     while cursor < requested_end and len(rows) < bars + 10:
-        batch = _request_json(
-            "/api/v3/klines" if market == "spot" else "/fapi/v1/klines",
-            {
-                "symbol": symbol.upper(),
-                "interval": interval,
-                "startTime": cursor,
-                "endTime": requested_end,
-                "limit": 1000,
-            },
-            API_BASE if market == "spot" else FUTURES_API_BASE,
-        )
+        try:
+            batch = _request_json(
+                "/api/v3/klines" if request_market == "spot" else "/fapi/v1/klines",
+                {
+                    "symbol": symbol.upper(),
+                    "interval": interval,
+                    "startTime": cursor,
+                    "endTime": requested_end,
+                    "limit": 1000,
+                },
+                API_BASE if request_market == "spot" else FUTURES_API_BASE,
+            )
+        except RuntimeError:
+            if request_market != "perpetual":
+                raise
+            # Some regions return HTTP 451 for Binance futures endpoints.
+            # Spot candles are still usable for signal generation, while funding is optional.
+            request_market = "spot"
+            rows.clear()
+            cursor = start_ms
+            continue
         if not isinstance(batch, list):
-            raise RuntimeError(f"Unexpected kline response for {symbol} {market}.")
+            raise RuntimeError(f"Unexpected kline response for {symbol} {request_market}.")
         if not batch:
             break
         rows.extend(batch)
@@ -264,13 +275,17 @@ def get_klines(
         frame.reset_index().to_csv(target, index=False)
         frame = frame.tail(bars)
     if include_funding:
-        funding = get_funding_rates(
-            symbol,
-            frame.index[0],
-            frame["close_time"].iloc[-1],
-            cache_dir=cache_dir,
-            refresh=refresh,
-        )
+        try:
+            funding = get_funding_rates(
+                symbol,
+                frame.index[0],
+                frame["close_time"].iloc[-1],
+                cache_dir=cache_dir,
+                refresh=refresh,
+            )
+        except RuntimeError as exc:
+            funding = pd.DataFrame(columns=["funding_rate", "mark_price"])
+            frame.attrs["funding_warning"] = str(exc)
         frame = attach_funding_rates(frame, funding)
     return frame
 

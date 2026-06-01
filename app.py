@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import socket
+from html import escape
 from pathlib import Path
 
 import pandas as pd
@@ -39,6 +40,11 @@ from smi_lab.equity_strategy import (
     rank_equities,
 )
 from smi_lab.indicators import atr, ema
+from smi_lab.market_info import (
+    cached_crypto_snapshots,
+    cached_equity_snapshots,
+    fetch_market_news,
+)
 from smi_lab.notifier import send_discord, send_telegram
 from smi_lab.paper import (
     aggregate_snapshot,
@@ -58,6 +64,7 @@ ACCOUNT_DIR = OUTPUT_DIR / "accounts"
 ACCOUNTS_FILE = ACCOUNT_DIR / "accounts.csv"
 POSITIONS_FILE = ACCOUNT_DIR / "positions.csv"
 ORDERS_FILE = ACCOUNT_DIR / "orders.csv"
+NEWS_FILE = OUTPUT_DIR / "news" / "market_news.json"
 
 
 st.set_page_config(
@@ -402,6 +409,53 @@ def plot_positions(positions: pd.DataFrame) -> go.Figure:
     return fig
 
 
+def plot_market_snapshot(frame: pd.DataFrame, title: str) -> go.Figure:
+    data = frame.copy()
+    if data.empty:
+        data = pd.DataFrame({"symbol": [], "change_pct": []})
+    data["change_pct"] = pd.to_numeric(data.get("change_pct", 0.0), errors="coerce").fillna(0.0)
+    colors = data["change_pct"].map(lambda value: "#22c55e" if value >= 0 else "#ef4444")
+    fig = go.Figure(
+        go.Bar(
+            x=data["symbol"].astype(str),
+            y=data["change_pct"],
+            marker_color=colors,
+            text=data["change_pct"].round(2).astype(str) + "%",
+            textposition="outside",
+        )
+    )
+    fig.update_layout(
+        title=title,
+        template="plotly_dark",
+        height=320,
+        margin=dict(l=10, r=10, t=45, b=10),
+        yaxis_title="Change %",
+    )
+    return fig
+
+
+def render_news_cards(items: list[object]) -> None:
+    if not items:
+        st.info("No market news is cached yet. Use Refresh news when network access is available.")
+        return
+    for item in items:
+        title = escape(str(getattr(item, "title", "")))
+        source = escape(str(getattr(item, "source", "")))
+        published_at = escape(str(getattr(item, "published_at", "")))
+        link = escape(str(getattr(item, "link", "")), quote=True)
+        st.markdown(
+            f"""
+            <div class="section-card">
+                <div class="metric-label">{source}</div>
+                <div style="font-size:1.02rem;font-weight:600;margin-top:0.25rem;">{title}</div>
+                <div class="small-muted">{published_at}</div>
+                <a href="{link}" target="_blank">Open source</a>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+
+
 def chart_ohlc(
     frame: pd.DataFrame,
     title: str,
@@ -600,72 +654,59 @@ with st.sidebar:
 
 if page == "Dashboard":
     hero(
-        "AI Strategy Command Center",
-        "Crypto allocation, Taiwan and U.S. stock selection, account tracking, and deployment status in one workspace.",
+        "Market Command Center",
+        "Live market snapshot, news, account visibility, and strategy readiness. Backtests are kept in Research.",
     )
     status = latest_status()
-    metrics = read_csv_or_empty(MARKET_ALPHA_DIR / "selected_metrics.csv")
-    tw_metrics = read_csv_or_empty(EQUITY_SELECTION_DIR / "tw_metrics.csv")
-    us_metrics = read_csv_or_empty(EQUITY_SELECTION_DIR / "us_metrics.csv")
+    crypto_snapshot = cached_crypto_snapshots(DEFAULT_SYMBOLS, crypto_interval)
+    tw_snapshot = cached_equity_snapshots(DEFAULT_TW_SYMBOLS, "tw")
+    us_snapshot = cached_equity_snapshots(DEFAULT_US_SYMBOLS, "us")
+    accounts = load_table(ACCOUNTS_FILE, ACCOUNT_COLUMNS)
+    positions = load_table(POSITIONS_FILE, POSITION_COLUMNS)
     cols = st.columns(4)
     with cols[0]:
         metric_card("Crypto live-ready", str(status.get("live_ready", "Unknown")), "Forward gate status")
     with cols[1]:
         metric_card("Paper return", pct(status.get("return_pct")), "Crypto strategy")
     with cols[2]:
-        metric_card("Forward days", money(status.get("forward_days")), "Minimum target: 30")
+        tracked_equity = pd.to_numeric(accounts.get("equity", pd.Series(dtype=float)), errors="coerce").fillna(0.0).sum()
+        metric_card("Tracked equity", money(tracked_equity), "Manual broker snapshots")
     with cols[3]:
-        blockers = len(status.get("blockers", []) or []) if status else "-"
-        metric_card("Open blockers", blockers, "Must be zero before live")
+        tracked_positions = len(positions) if not positions.empty else 0
+        metric_card("Tracked positions", tracked_positions, "FT / Cathay / Pionex")
 
-    left, right = st.columns([1, 2])
+    left, right = st.columns([1, 1])
     with left:
         st.plotly_chart(plot_readiness(status), width="stretch")
     with right:
-        comparison_rows = []
-        for market_name, frame in (("Taiwan", tw_metrics), ("U.S.", us_metrics)):
-            if not frame.empty and {"strategy", "return_pct"}.issubset(frame.columns):
-                for row in frame.to_dict("records"):
-                    comparison_rows.append(
-                        {
-                            "market": market_name,
-                            "strategy": row["strategy"],
-                            "return_pct": safe_float(row.get("return_pct")),
-                        }
-                    )
-        comparison = pd.DataFrame(comparison_rows)
-        fig = go.Figure()
-        if not comparison.empty:
-            for strategy in comparison["strategy"].unique():
-                subset = comparison[comparison["strategy"] == strategy]
-                fig.add_trace(
-                    go.Bar(
-                        x=subset["market"],
-                        y=subset["return_pct"],
-                        name=str(strategy),
-                    )
-                )
-        fig.update_layout(
-            title="Stock Strategy vs Benchmark Return",
-            template="plotly_dark",
-            height=320,
-            margin=dict(l=10, r=10, t=45, b=10),
-            barmode="group",
-        )
-        st.plotly_chart(fig, width="stretch")
+        if not positions.empty:
+            st.plotly_chart(plot_positions(positions), width="stretch")
+        else:
+            st.plotly_chart(plot_account_equity(accounts), width="stretch")
 
-    stock_left, stock_right = st.columns(2)
-    with stock_left:
-        st.plotly_chart(plot_metric_comparison(tw_metrics, "Taiwan Metrics"), width="stretch")
-    with stock_right:
-        st.plotly_chart(plot_metric_comparison(us_metrics, "U.S. Metrics"), width="stretch")
-    with st.expander("Raw dashboard data"):
+    market_a, market_b, market_c = st.columns(3)
+    with market_a:
+        st.plotly_chart(plot_market_snapshot(crypto_snapshot, "Crypto 24h Snapshot"), width="stretch")
+    with market_b:
+        st.plotly_chart(plot_market_snapshot(tw_snapshot, "Taiwan Watchlist 1D"), width="stretch")
+    with market_c:
+        st.plotly_chart(plot_market_snapshot(us_snapshot, "U.S. Watchlist 1D"), width="stretch")
+
+    refresh_news = st.button("Refresh market news")
+    news = fetch_market_news(NEWS_FILE, refresh=refresh_news, max_items=6)
+    st.subheader("Market News")
+    news_cols = st.columns(3)
+    for idx, item in enumerate(news):
+        with news_cols[idx % 3]:
+            render_news_cards([item])
+
+    with st.expander("Market snapshot data"):
+        st.caption("Crypto")
+        st.dataframe(crypto_snapshot, hide_index=True, width="stretch")
         st.caption("Taiwan")
-        st.dataframe(tw_metrics, hide_index=True, width="stretch")
+        st.dataframe(tw_snapshot, hide_index=True, width="stretch")
         st.caption("U.S.")
-        st.dataframe(us_metrics, hide_index=True, width="stretch")
-        st.caption("Crypto metrics")
-        st.dataframe(metrics.tail(20), hide_index=True, width="stretch")
+        st.dataframe(us_snapshot, hide_index=True, width="stretch")
 
 elif page == "Crypto":
     hero(
@@ -988,8 +1029,8 @@ elif page == "Accounts":
         "Account & Order Tracking",
         "Pionex crypto account tracking, Cathay Taiwan securities tracking, and Firstrade U.S. brokerage tracking. This app records state; it does not place live orders yet.",
     )
-    account_tab, position_tab, order_tab = st.tabs(
-        ["Account Snapshots", "Positions", "Order Tracker"]
+    account_tab, position_tab, order_tab, integration_tab = st.tabs(
+        ["Account Snapshots", "Positions", "Order Tracker", "Broker Integration Plan"]
     )
     with account_tab:
         st.subheader("Save account snapshot")
@@ -1137,6 +1178,41 @@ elif page == "Accounts":
             st.plotly_chart(fig, width="stretch")
             with st.expander("Order table"):
                 st.dataframe(orders.tail(100), hide_index=True, width="stretch")
+    with integration_tab:
+        st.subheader("How to track FT and Cathay holdings")
+        col_a, col_b, col_c = st.columns(3)
+        with col_a:
+            metric_card("Firstrade", "CSV first", "Use exported positions until a stable API path exists.")
+            st.markdown(
+                """
+                - Export positions / account value from Firstrade.
+                - Normalize to `symbol`, `quantity`, `average_price`, `current_price`.
+                - Import into this app as a manual position snapshot.
+                - Later phase: browser-assisted statement download if you want semi-automation.
+                """
+            )
+        with col_b:
+            metric_card("Cathay", "CSV / statement", "Taiwan brokers usually need statement import or manual sync.")
+            st.markdown(
+                """
+                - Export holdings from Cathay Securities when available.
+                - Map local symbols to Yahoo format such as `2330.TW`.
+                - Keep order execution manual as requested.
+                - Later phase: add a guided import template for Cathay-specific column names.
+                """
+            )
+        with col_c:
+            metric_card("Pionex", "API later", "Start with tracking, then canary-size live execution.")
+            st.markdown(
+                """
+                - Record live account equity and planned crypto orders here.
+                - Enable API only after keys, max order size, daily loss limit, and kill switch are configured.
+                - API secrets must stay outside Git and Streamlit public settings.
+                """
+            )
+        st.info(
+            "Recommended next build step: add a CSV importer with broker presets for Firstrade and Cathay, then reconcile imported positions against strategy targets."
+        )
 
 elif page == "Research":
     hero(

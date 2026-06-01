@@ -15,7 +15,8 @@ from smi_lab.allocation import (
     backtest_trend_allocation,
 )
 from smi_lab.config import StrategyConfig, load_portfolio, save_portfolio
-from smi_lab.data import attach_funding_rates, bars_for_years, get_klines
+from smi_lab.data import attach_funding_rates, bars_for_years, fetch_klines, get_klines
+from smi_lab.equity_data import fetch_yahoo_chart
 from smi_lab.evolution import _candidate_configs
 from smi_lab.accounts import (
     ACCOUNT_COLUMNS,
@@ -33,6 +34,7 @@ from smi_lab.equity_strategy import (
     benchmark_buy_and_hold,
     rank_equities,
 )
+from smi_lab.market_info import cached_crypto_snapshots
 from smi_lab.paper import aggregate_snapshot, allocation_snapshot, update_forward_tracking
 from smi_lab.regime import attach_btc_momentum_regime, attach_cboe_regime
 from smi_lab.rotation import RotationConfig, _rebalance_schedule, backtest_rotation
@@ -101,6 +103,61 @@ class StrategyTests(unittest.TestCase):
         self.assertEqual(bars_for_years("4h", 5), 10958)
         with self.assertRaises(ValueError):
             bars_for_years("4h", 6)
+
+    @patch("smi_lab.data._request_json")
+    def test_perpetual_klines_fall_back_to_spot_when_futures_blocked(self, request_json: object) -> None:
+        rows = [
+            [
+                1_700_000_000_000 + i * 14_400_000,
+                "100",
+                "101",
+                "99",
+                "100",
+                "1",
+                1_700_000_000_000 + (i + 1) * 14_400_000 - 1,
+                "1",
+                1,
+                "1",
+                "1",
+                "0",
+            ]
+            for i in range(70)
+        ]
+        request_json.side_effect = [RuntimeError("HTTP Error 451"), rows]
+
+        frame = fetch_klines(
+            "BTCUSDT",
+            interval="4h",
+            bars=50,
+            end_time_ms=1_700_000_000_000 + 80 * 14_400_000,
+            market="perpetual",
+        )
+
+        self.assertFalse(frame.empty)
+        self.assertEqual(request_json.call_count, 2)
+
+    @patch("smi_lab.equity_data._fetch_stooq_daily")
+    @patch("smi_lab.equity_data._fetch_yahoo_payload", side_effect=RuntimeError("HTTP Error 429"))
+    def test_equity_fetch_uses_stooq_when_yahoo_is_rate_limited(
+        self, _: object, stooq_daily: object
+    ) -> None:
+        index = pd.date_range("2025-01-01", periods=3, freq="1D", tz="UTC", name="open_time")
+        stooq_daily.return_value = pd.DataFrame(
+            {
+                "open": [100.0, 101.0, 102.0],
+                "high": [101.0, 102.0, 103.0],
+                "low": [99.0, 100.0, 101.0],
+                "close": [100.5, 101.5, 102.5],
+                "volume": [1.0, 1.0, 1.0],
+                "close_time": index,
+            },
+            index=index,
+        )
+        with TemporaryDirectory() as directory:
+            frame = fetch_yahoo_chart("AAPL", interval="1d", range_="1y", cache_dir=directory, refresh=True)
+
+        self.assertFalse(frame.empty)
+        self.assertEqual(float(frame["close"].iloc[-1]), 102.5)
 
     def test_research_candidates_keep_short_leg_enabled(self) -> None:
         candidates = _candidate_configs(StrategyConfig(), count=30, seed=42)
@@ -627,6 +684,27 @@ class StrategyTests(unittest.TestCase):
             self.assertEqual(orders.iloc[0]["status"], "PLANNED")
             self.assertEqual(list(load_table(account_path, ACCOUNT_COLUMNS).columns), ACCOUNT_COLUMNS)
             self.assertEqual(list(load_table(order_path, ORDER_COLUMNS).columns), ORDER_COLUMNS)
+
+    def test_cached_market_snapshot_uses_local_crypto_cache(self) -> None:
+        index = pd.date_range("2025-01-01", periods=8, freq="4h", tz="UTC", name="open_time")
+        frame = pd.DataFrame(
+            {
+                "open_time": index,
+                "open": range(100, 108),
+                "high": range(101, 109),
+                "low": range(99, 107),
+                "close": range(100, 108),
+                "volume": 1.0,
+                "close_time": index + pd.Timedelta(hours=4),
+            }
+        )
+        with TemporaryDirectory() as directory:
+            target = f"{directory}/BTCUSDT_4h_perpetual.csv"
+            frame.to_csv(target, index=False)
+            snapshot = cached_crypto_snapshots(["BTCUSDT"], cache_dir=directory)
+
+        self.assertEqual(snapshot.iloc[0]["symbol"], "BTCUSDT")
+        self.assertGreater(float(snapshot.iloc[0]["change_pct"]), 0.0)
 
     def test_rotation_avoids_asset_with_excessive_recent_funding(self) -> None:
         index = pd.date_range("2025-01-01", periods=30, freq="4h", tz="UTC")
