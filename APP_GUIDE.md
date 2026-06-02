@@ -73,8 +73,11 @@ Run manually:
 
 Active Codex automations:
 
-- `Taiwan daily equity scan`: every weekday at 09:00 Taiwan time.
-- `U.S. daily equity scan`: every weekday at 21:00 Taiwan time.
+- `Taiwan daily equity scan`: every weekday at 13:35 Taiwan time, after the Taiwan stock market close.
+- `U.S. daily equity scan`: Tuesday through Saturday at 07:30 Taiwan time, after the prior U.S. session closes.
+- `Crypto 4h allocation scan`: every 4 hours, matching the crypto allocation strategy candle interval.
+
+Stock scans are intentionally not hourly. Taiwan and U.S. strategies use daily bars, so official strategy recommendations should be based on post-close data. Intraday observations can be shown in the app, but they should not update Live Desk order intents unless a separate intraday strategy is designed and backtested.
 
 The latest equity optimization selected Top 3 sleeves for both markets. Taiwan uses 20/126-day momentum with 20-day rebalance and 0050.TW as the gate. U.S. uses 63/126-day momentum with 40-day rebalance and SPY as the gate. The latest two-year broad-universe backtests were:
 
@@ -101,7 +104,7 @@ The notifier also reads local Git-ignored fallbacks:
 - `data/secrets/discord_webhook_url.txt`
 - `data/secrets/discord_mention.txt`
 
-The old `Equity price alert check` automation is therefore harmless if it still runs: without the explicit legacy flag, it does not send level alerts or consume alert state.
+The old `Equity price alert check` automation is paused. Future production alerts should be rebalance-event alerts instead of entry/stop/TP price-level alerts.
 
 ## Strategy Optimization Status
 
