@@ -45,7 +45,7 @@ from smi_lab.equity_strategy import (
     rank_equities,
 )
 from smi_lab.equity_universe import equity_scan_symbols
-from smi_lab.market_info import cached_crypto_snapshots
+from smi_lab.market_info import cached_crypto_snapshots, fetch_equity_symbol_news
 from smi_lab.paper import aggregate_snapshot, allocation_snapshot, update_forward_tracking
 from smi_lab.position_planner import build_rebalance_plan
 from smi_lab.price_alerts import check_equity_price_alerts, format_alert_message, AlertEvent
@@ -1096,6 +1096,68 @@ class StrategyTests(unittest.TestCase):
 
         self.assertEqual(snapshot.iloc[0]["symbol"], "BTCUSDT")
         self.assertGreater(float(snapshot.iloc[0]["change_pct"]), 0.0)
+
+    def test_equity_symbol_news_uses_cache_only_without_network(self) -> None:
+        with TemporaryDirectory() as directory:
+            target = Path(directory) / "us_AAPL.json"
+            target.write_text(
+                json.dumps(
+                    {
+                        "items": [
+                            {
+                                "title": "Apple product news",
+                                "source": "Cached Feed",
+                                "link": "https://example.com/aapl",
+                                "published_at": "2026-01-01T00:00:00+00:00",
+                            }
+                        ]
+                    }
+                ),
+                encoding="utf-8",
+            )
+            with patch("smi_lab.market_info.urlopen") as mocked_urlopen:
+                items = fetch_equity_symbol_news(
+                    "AAPL",
+                    "us",
+                    cache_dir=directory,
+                    cache_only=True,
+                )
+
+        self.assertEqual(items[0].title, "Apple product news")
+        mocked_urlopen.assert_not_called()
+
+    def test_equity_symbol_news_refresh_parses_rss(self) -> None:
+        class Response:
+            def __enter__(self) -> "Response":
+                return self
+
+            def __exit__(self, *_: object) -> None:
+                return None
+
+            def read(self) -> bytes:
+                return (
+                    b"<?xml version='1.0'?><rss><channel><title>Mock Feed</title>"
+                    b"<item><title>TXN earnings update</title>"
+                    b"<link>https://example.com/txn</link>"
+                    b"<pubDate>Mon, 01 Jun 2026 12:00:00 GMT</pubDate></item>"
+                    b"</channel></rss>"
+                )
+
+        with TemporaryDirectory() as directory:
+            with patch("smi_lab.market_info.urlopen", return_value=Response()):
+                items = fetch_equity_symbol_news(
+                    "TXN",
+                    "us",
+                    company="Texas Instruments",
+                    cache_dir=directory,
+                    refresh=True,
+                    max_items=1,
+                )
+            cached = json.loads((Path(directory) / "us_TXN.json").read_text(encoding="utf-8"))
+
+        self.assertEqual(items[0].source, "Mock Feed")
+        self.assertEqual(cached["symbol"], "TXN")
+        self.assertEqual(cached["items"][0]["title"], "TXN earnings update")
 
     def test_rotation_avoids_asset_with_excessive_recent_funding(self) -> None:
         index = pd.date_range("2025-01-01", periods=30, freq="4h", tz="UTC")

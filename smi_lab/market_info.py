@@ -184,19 +184,8 @@ def _load_news_cache(path: Path) -> list[NewsItem]:
     return [NewsItem(**item) for item in payload.get("items", [])]
 
 
-def fetch_market_news(
-    cache_path_: str | Path = "outputs/news/market_news.json",
-    refresh: bool = False,
-    max_items: int = 8,
-    category: str = "us",
-) -> list[NewsItem]:
-    target = Path(cache_path_)
-    if target.exists() and not refresh:
-        cached = _load_news_cache(target)
-        if cached:
-            return cached[:max_items]
+def _interleave_feed_items(feeds: tuple[str, ...], max_items: int) -> list[NewsItem]:
     feed_items: list[list[NewsItem]] = []
-    feeds = NEWS_FEEDS.get(category, NEWS_FEEDS["us"])
     seen: set[str] = set()
     for feed_url in feeds:
         parsed: list[NewsItem] = []
@@ -221,6 +210,21 @@ def fetch_market_news(
                 break
         if len(items) >= max_items:
             break
+    return items[:max_items]
+
+
+def fetch_market_news(
+    cache_path_: str | Path = "outputs/news/market_news.json",
+    refresh: bool = False,
+    max_items: int = 8,
+    category: str = "us",
+) -> list[NewsItem]:
+    target = Path(cache_path_)
+    if target.exists() and not refresh:
+        cached = _load_news_cache(target)
+        if cached:
+            return cached[:max_items]
+    items = _interleave_feed_items(NEWS_FEEDS.get(category, NEWS_FEEDS["us"]), max_items)
     if not items:
         return _load_news_cache(target)[:max_items]
     target.parent.mkdir(parents=True, exist_ok=True)
@@ -230,6 +234,76 @@ def fetch_market_news(
                 "updated_at": datetime.now(timezone.utc).isoformat(),
                 "items": [item.to_dict() for item in items[:max_items]],
             },
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+    return items[:max_items]
+
+
+def equity_symbol_news_feeds(symbol: str, market: str, company: str | None = None) -> tuple[str, ...]:
+    normalized = symbol.upper()
+    base_symbol = normalized.replace(".TW", "")
+    name = (company or company_name(normalized)).strip()
+    if market == "tw":
+        query = f"{base_symbol} {name} 台股 新聞"
+        return (
+            "https://feeds.finance.yahoo.com/rss/2.0/headline?"
+            + urlencode({"s": normalized, "region": "TW", "lang": "zh-Hant-TW"}),
+            "https://news.google.com/rss/search?"
+            + urlencode({"q": query, "hl": "zh-TW", "gl": "TW", "ceid": "TW:zh-Hant"}),
+        )
+    query = f"{normalized} {name} stock news"
+    return (
+        "https://feeds.finance.yahoo.com/rss/2.0/headline?"
+        + urlencode({"s": normalized, "region": "US", "lang": "en-US"}),
+        "https://news.google.com/rss/search?"
+        + urlencode({"q": query, "hl": "en-US", "gl": "US", "ceid": "US:en"}),
+    )
+
+
+def _equity_news_cache_file(cache_dir: str | Path, market: str, symbol: str) -> Path:
+    safe_symbol = symbol.upper().replace("/", "_").replace(".", "_")
+    return Path(cache_dir) / f"{market}_{safe_symbol}.json"
+
+
+def fetch_equity_symbol_news(
+    symbol: str,
+    market: str,
+    company: str | None = None,
+    cache_dir: str | Path = "outputs/news/equity_symbols",
+    refresh: bool = False,
+    max_items: int = 4,
+    cache_only: bool = False,
+) -> list[NewsItem]:
+    """Fetch or load cached news for a strategy-selected equity symbol.
+
+    News is informational only. It should not alter weights or orders unless a
+    separate news-risk layer has been designed and backtested.
+    """
+    target = _equity_news_cache_file(cache_dir, market, symbol)
+    cached = _load_news_cache(target)
+    if cache_only and not refresh:
+        return cached[:max_items]
+    if cached and not refresh:
+        return cached[:max_items]
+    items = _interleave_feed_items(
+        equity_symbol_news_feeds(symbol, market, company=company),
+        max_items=max_items,
+    )
+    if not items:
+        return cached[:max_items]
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(
+        json.dumps(
+            {
+                "updated_at": datetime.now(timezone.utc).isoformat(),
+                "market": market,
+                "symbol": symbol.upper(),
+                "company": company or company_name(symbol),
+                "items": [item.to_dict() for item in items[:max_items]],
+            },
+            ensure_ascii=False,
             indent=2,
         ),
         encoding="utf-8",

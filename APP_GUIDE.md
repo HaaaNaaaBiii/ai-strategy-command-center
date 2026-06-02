@@ -37,6 +37,8 @@ Equity data first uses Yahoo Finance chart data. If Yahoo rate-limits with HTTP 
 
 Dashboard news uses RSS feeds with a local cache. If all feeds are temporarily unavailable, the app keeps the page alive and shows the latest cached items when present.
 
+Selected stock news is shown for daily Taiwan/U.S. scan picks on the Dashboard and Stocks page. It uses per-symbol RSS caches under `outputs/news/equity_symbols/`; clicking refresh fetches Yahoo Finance and Google News results for each selected symbol. This news layer is informational only and does not alter strategy scores, target weights, or order plans.
+
 ## Broker Holding Tracking Plan
 
 Firstrade holdings use an automated CSV-first workflow because a stable public API is not assumed. Export positions/account value from Firstrade, place the CSV under `data/broker_imports/firstrade/`, then click `Sync broker exports` on the Accounts page. The importer maps common English column names to `symbol`, `quantity`, `average_price`, `current_price`, `market_value`, and `unrealized_pnl`.

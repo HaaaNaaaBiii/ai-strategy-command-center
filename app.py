@@ -50,6 +50,7 @@ from smi_lab.indicators import atr, ema
 from smi_lab.market_info import (
     cached_crypto_snapshots,
     cached_equity_snapshots,
+    fetch_equity_symbol_news,
     fetch_market_news,
 )
 from smi_lab.broker_import import DEFAULT_IMPORT_DIR, sync_broker_exports
@@ -84,6 +85,7 @@ NEWS_FILES = {
     "tw": OUTPUT_DIR / "news" / "tw_news.json",
     "us": OUTPUT_DIR / "news" / "us_news.json",
 }
+EQUITY_SYMBOL_NEWS_DIR = OUTPUT_DIR / "news" / "equity_symbols"
 BROKER_IMPORT_DIR = DEFAULT_IMPORT_DIR
 EQUITY_LIVE_DIR = OUTPUT_DIR / "equity_live"
 LIVE_MEMORY_FILE = EQUITY_LIVE_DIR / "live_strategy_memory.json"
@@ -112,6 +114,8 @@ I18N = {
         "tw_picks": "\u53f0\u80a1\u6383\u76e4\u63a8\u85a6",
         "us_picks": "\u7f8e\u80a1\u6383\u76e4\u63a8\u85a6",
         "market_news": "\u5e02\u5834\u65b0\u805e",
+        "selected_stock_news": "\u7b56\u7565\u9078\u80a1\u76f8\u95dc\u65b0\u805e",
+        "refresh_stock_news": "\u66f4\u65b0\u9078\u80a1\u65b0\u805e",
         "refresh_news": "\u66f4\u65b0\u5e02\u5834\u65b0\u805e",
         "news_crypto": "\u52a0\u5bc6\u8ca8\u5e63",
         "news_tw": "\u53f0\u80a1",
@@ -142,6 +146,8 @@ I18N = {
         "tw_picks": "Taiwan Scan Picks",
         "us_picks": "U.S. Scan Picks",
         "market_news": "Market News",
+        "selected_stock_news": "Selected Stock News",
+        "refresh_stock_news": "Refresh selected-stock news",
         "refresh_news": "Refresh market news",
         "news_crypto": "Crypto",
         "news_tw": "Taiwan Stocks",
@@ -197,7 +203,13 @@ def metric_card(label: str, value: object, note: str = "") -> None:
             st.caption(note)
 
 
-def recommendation_cards(frame: pd.DataFrame, title: str, limit: int = 3) -> None:
+def recommendation_cards(
+    frame: pd.DataFrame,
+    title: str,
+    market: str | None = None,
+    refresh_symbol_news: bool = False,
+    limit: int = 3,
+) -> None:
     st.subheader(title)
     if frame.empty:
         st.info("No scan recommendations yet.")
@@ -212,6 +224,22 @@ def recommendation_cards(frame: pd.DataFrame, title: str, limit: int = 3) -> Non
             metric_cols[1].metric("Rank", "-" if pd.isna(row.get("rank")) else int(float(row.get("rank"))))
             metric_cols[0].metric("Score", money(row.get("score")))
             metric_cols[1].metric("Short mom", pct(row.get("short_momentum_pct")))
+            if market:
+                symbol = str(row.get("symbol", ""))
+                company = str(row.get("company", company_name(symbol)))
+                news = fetch_equity_symbol_news(
+                    symbol,
+                    market,
+                    company=company,
+                    cache_dir=EQUITY_SYMBOL_NEWS_DIR,
+                    refresh=refresh_symbol_news,
+                    max_items=2,
+                    cache_only=not refresh_symbol_news,
+                )
+                render_compact_news_list(
+                    news,
+                    empty_message="No cached symbol news yet. Use Refresh selected-stock news.",
+                )
 
 
 def safe_float(value: object, default: float = 0.0) -> float:
@@ -572,6 +600,60 @@ def render_news_cards(items: list[object]) -> None:
             st.caption(published_at)
             if link:
                 st.link_button("Open source", link)
+
+
+def render_compact_news_list(items: list[object], empty_message: str) -> None:
+    st.caption("Related news")
+    if not items:
+        st.caption(empty_message)
+        return
+    for item in items:
+        title = str(getattr(item, "title", "")).strip()
+        source = str(getattr(item, "source", "")).strip()
+        published_at = str(getattr(item, "published_at", "")).strip()
+        link = str(getattr(item, "link", "")).strip()
+        if not title:
+            continue
+        meta = " | ".join(part for part in (source, published_at[:10]) if part)
+        if meta:
+            st.caption(meta)
+        if link:
+            st.markdown(f"[{title}]({link})")
+        else:
+            st.markdown(f"**{title}**")
+
+
+def render_recommendation_news(
+    frame: pd.DataFrame,
+    market: str,
+    refresh_symbol_news: bool,
+    limit: int = 5,
+) -> None:
+    st.subheader(tr("selected_stock_news"))
+    st.caption("News is shown for reference only and does not change strategy weights or order plans.")
+    if frame.empty:
+        st.info("No selected stocks are available for related news.")
+        return
+    for row in frame.head(limit).to_dict("records"):
+        symbol = str(row.get("symbol", ""))
+        if not symbol:
+            continue
+        company = str(row.get("company", company_name(symbol)))
+        with st.container(border=True):
+            st.markdown(f"**{symbol} | {company}**")
+            items = fetch_equity_symbol_news(
+                symbol,
+                market,
+                company=company,
+                cache_dir=EQUITY_SYMBOL_NEWS_DIR,
+                refresh=refresh_symbol_news,
+                max_items=4,
+                cache_only=not refresh_symbol_news,
+            )
+            render_compact_news_list(
+                items,
+                empty_message="No cached related news yet. Click Refresh selected-stock news when network access is available.",
+            )
 
 
 def chart_ohlc(
@@ -1014,11 +1096,12 @@ if page == "Dashboard":
         tracked_positions = len(positions) if not positions.empty else 0
         metric_card(tr("tracked_positions"), tracked_positions, "FT / Cathay / Pionex")
 
+    refresh_stock_news = st.button(tr("refresh_stock_news"), key="dashboard_refresh_stock_news")
     rec_left, rec_right = st.columns(2)
     with rec_left:
-        recommendation_cards(tw_scan, tr("tw_picks"))
+        recommendation_cards(tw_scan, tr("tw_picks"), market="tw", refresh_symbol_news=refresh_stock_news)
     with rec_right:
-        recommendation_cards(us_scan, tr("us_picks"))
+        recommendation_cards(us_scan, tr("us_picks"), market="us", refresh_symbol_news=refresh_stock_news)
 
     market_a, market_b, market_c = st.columns(3)
     with market_a:
@@ -1255,6 +1338,16 @@ elif page == "Stocks":
                 if column in scan_recommendations
             ]
             st.dataframe(scan_recommendations[display_cols], hide_index=True, width="stretch")
+            refresh_symbol_news = st.button(
+                tr("refresh_stock_news"),
+                key=f"{market}_refresh_recommendation_news",
+            )
+            render_recommendation_news(
+                scan_recommendations,
+                market,
+                refresh_symbol_news=refresh_symbol_news,
+                limit=5,
+            )
         else:
             st.info("No scheduled scan output yet. Run `scan_equity_signals.py` or wait for the market-time automation.")
         with st.expander("Latest full scan ranking", expanded=False):
