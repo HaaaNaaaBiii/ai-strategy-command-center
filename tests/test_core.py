@@ -36,7 +36,7 @@ from smi_lab.accounts import (
 )
 from smi_lab.broker_import import normalize_broker_positions, sync_broker_exports
 from smi_lab.equity_live import build_equity_live_order_plan, load_live_strategy_memory, remember_live_plan
-from smi_lab.equity_signals import add_company_names, build_equity_trade_plan
+from smi_lab.equity_signals import add_company_names, build_equity_trade_plan, explain_equity_selection_reason
 from smi_lab.equity_scanner import build_scan_recommendations
 from smi_lab.equity_strategy import (
     EquitySelectionConfig,
@@ -769,6 +769,8 @@ class StrategyTests(unittest.TestCase):
         self.assertIsNone(plan.risk_reward_2)
         self.assertIsNone(plan.strategy_exit)
         self.assertGreater(plan.close, 0)
+        self.assertIn("score", plan.reason)
+        self.assertIn("rank 1", plan.reason)
 
     def test_equity_scanner_builds_strategy_recommendations(self) -> None:
         index = pd.date_range("2025-01-01", periods=260, freq="1D", tz="UTC")
@@ -801,8 +803,33 @@ class StrategyTests(unittest.TestCase):
         self.assertIn("reference_price", recommendations.columns)
         self.assertNotIn("risk_reward_2", recommendations.columns)
         self.assertNotIn("entry_price", recommendations.columns)
+        self.assertIn("reason", ranking.columns)
+        self.assertEqual(len(set(recommendations["reason"].tolist())), 2)
+        self.assertIn("rank 1", recommendations.iloc[0]["reason"])
+        self.assertIn("rank 2", recommendations.iloc[1]["reason"])
         self.assertIn("equity_selection_scan", set(metrics["strategy"]))
         self.assertIn("2330.TW", equity_scan_symbols("tw"))
+
+    def test_equity_reason_explains_volatility_filter(self) -> None:
+        reason = explain_equity_selection_reason(
+            {
+                "symbol": "2327.TW",
+                "eligible": False,
+                "risk_on": True,
+                "above_trend": True,
+                "score": 153.63,
+                "short_momentum_pct": 122.38,
+                "long_momentum_pct": 244.44,
+                "annualized_volatility_pct": 80.81,
+                "scan_rank": 35,
+            },
+            EquitySelectionConfig(market_symbol="0050.TW", max_volatility_pct=80.0),
+            selected=False,
+            rank=35,
+        )
+
+        self.assertIn("volatility 80.81% exceeds max 80.00%", reason)
+        self.assertIn("rank 35", reason)
 
     def test_account_tables_upsert_and_append(self) -> None:
         with TemporaryDirectory() as directory:

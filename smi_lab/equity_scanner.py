@@ -9,7 +9,7 @@ from pathlib import Path
 import pandas as pd
 
 from .equity_data import fetch_yahoo_chart, normalize_equity_symbol
-from .equity_signals import add_company_names, build_equity_trade_plan
+from .equity_signals import add_company_names, build_equity_trade_plan, explain_equity_selection_reason
 from .equity_strategy import (
     EquitySelectionConfig,
     backtest_equity_selection,
@@ -90,6 +90,16 @@ def build_scan_recommendations(
     ranking = add_company_names(rank_equities(universe, config))
     ranking["scan_rank"] = range(1, len(ranking) + 1)
     eligible = ranking[ranking["eligible"]].head(config.top_n)
+    selected_symbols = set(eligible["symbol"].astype(str).tolist())
+    ranking["reason"] = [
+        explain_equity_selection_reason(
+            row,
+            config,
+            selected=str(row.get("symbol", "")) in selected_symbols,
+            rank=int(row.get("scan_rank", 0)) or None,
+        )
+        for row in ranking.to_dict("records")
+    ]
     rows: list[dict[str, object]] = []
     ranking_lookup = ranking.set_index("symbol").to_dict("index")
     for symbol in eligible["symbol"].tolist():
@@ -105,6 +115,7 @@ def build_scan_recommendations(
                 "annualized_volatility_pct": ranked.get("annualized_volatility_pct"),
                 "above_trend": ranked.get("above_trend"),
                 "risk_on": ranked.get("risk_on"),
+                "reason": ranked.get("reason", plan.reason),
             }
         )
         rows.append(row)

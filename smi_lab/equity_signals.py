@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass
+from typing import Mapping
 
 import pandas as pd
 
@@ -172,6 +173,74 @@ def _latest_value(series: pd.Series) -> float:
     return float(clean.iloc[-1])
 
 
+def _metric(row: Mapping[str, object], column: str) -> float | None:
+    value = row.get(column)
+    try:
+        if value is None or pd.isna(value):
+            return None
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _flag(row: Mapping[str, object], column: str) -> bool:
+    value = row.get(column)
+    if isinstance(value, bool):
+        return value
+    return str(value).lower() in {"true", "1", "yes", "y"}
+
+
+def explain_equity_selection_reason(
+    row: Mapping[str, object],
+    config: EquitySelectionConfig,
+    selected: bool,
+    rank: int | None = None,
+) -> str:
+    score = _metric(row, "score")
+    short_momentum = _metric(row, "short_momentum_pct")
+    long_momentum = _metric(row, "long_momentum_pct")
+    volatility = _metric(row, "annualized_volatility_pct")
+    risk_on = _flag(row, "risk_on")
+    above_trend = _flag(row, "above_trend")
+    eligible = _flag(row, "eligible")
+    resolved_rank = rank or int(_metric(row, "scan_rank") or _metric(row, "rank") or 0) or None
+    score_text = "-" if score is None else f"{score:.2f}"
+    short_text = "-" if short_momentum is None else f"{short_momentum:.2f}%"
+    long_text = "-" if long_momentum is None else f"{long_momentum:.2f}%"
+    vol_text = "-" if volatility is None else f"{volatility:.2f}%"
+    rank_text = "-" if resolved_rank is None else str(resolved_rank)
+    context = (
+        f"rank {rank_text}, score {score_text}, short momentum {short_text}, "
+        f"long momentum {long_text}, volatility {vol_text}."
+    )
+    if selected:
+        return (
+            f"Selected inside Top {config.top_n}: {context} "
+            f"Market gate is {'risk-on' if risk_on else 'risk-off'}, price is "
+            f"{'above' if above_trend else 'below'} the trend line. Live action is rotation/rebalance; "
+            "latest close is only the planning reference price."
+        )
+    if eligible:
+        return (
+            f"Eligible but outside Top {config.top_n}: {context} "
+            "It remains on the watchlist but is not allocated until it rotates into the selected sleeve."
+        )
+
+    blockers: list[str] = []
+    if not risk_on:
+        blockers.append("market gate is risk-off")
+    if not above_trend:
+        blockers.append("price is below trend")
+    if short_momentum is None or short_momentum <= 0:
+        blockers.append("short momentum is not positive")
+    if long_momentum is None or long_momentum <= 0:
+        blockers.append("long momentum is not positive")
+    if volatility is not None and volatility > config.max_volatility_pct:
+        blockers.append(f"volatility {volatility:.2f}% exceeds max {config.max_volatility_pct:.2f}%")
+    blocker_text = "; ".join(blockers) if blockers else "fails one or more eligibility filters"
+    return f"Excluded from Top {config.top_n}: {blocker_text}. {context}"
+
+
 def build_equity_trade_plan(
     symbol: str,
     universe: dict[str, pd.DataFrame],
@@ -203,6 +272,8 @@ def build_equity_trade_plan(
         and symbol in set(ranking.loc[ranking["eligible"], "symbol"].tolist())
     )
     rank = ranked_symbols.index(symbol) + 1 if symbol in ranked_symbols else None
+    ranked = ranking[ranking["symbol"].astype(str) == symbol].head(1)
+    ranked_row = ranked.iloc[0].to_dict() if not ranked.empty else {}
     entry = None
     stop = None
     take_profit_1 = None
@@ -212,16 +283,11 @@ def build_equity_trade_plan(
     strategy_exit = None
     if selected:
         action = "ROTATION_REBALANCE"
-        reason = (
-            "Eligible and inside the current top-N sleeve. The live action is a "
-            "rotation/rebalance intent; latest close is only the planning reference price."
-        )
     elif eligible:
         action = "HOLD_CASH"
-        reason = "Eligible but not inside the current top-N sleeve; keep cash unless it rotates in."
     else:
         action = "HOLD_CASH_OR_EXIT"
-        reason = "Fails at least one market, trend, momentum, or volatility filter."
+    reason = explain_equity_selection_reason(ranked_row, config, selected=selected, rank=rank)
     return EquityTradePlan(
         symbol=symbol,
         company=company_name(symbol),
