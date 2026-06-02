@@ -35,7 +35,7 @@ from smi_lab.accounts import (
     upsert_account,
 )
 from smi_lab.broker_import import normalize_broker_positions, sync_broker_exports
-from smi_lab.equity_live import build_equity_live_order_plan
+from smi_lab.equity_live import build_equity_live_order_plan, load_live_strategy_memory, remember_live_plan
 from smi_lab.equity_signals import add_company_names, build_equity_trade_plan
 from smi_lab.equity_scanner import build_scan_recommendations
 from smi_lab.equity_strategy import (
@@ -697,7 +697,7 @@ class StrategyTests(unittest.TestCase):
         self.assertGreater(result.metrics["return_pct"], benchmark.metrics["return_pct"])
         self.assertFalse(result.rebalances.empty)
 
-    def test_equity_trade_plan_adds_company_and_levels(self) -> None:
+    def test_equity_trade_plan_adds_company_without_unbacktested_levels(self) -> None:
         index = pd.date_range("2025-01-01", periods=260, freq="1D", tz="UTC")
         market = pd.Series(np.linspace(100, 140, len(index)), index=index)
         strong = pd.Series(np.linspace(100, 220, len(index)), index=index)
@@ -719,15 +719,15 @@ class StrategyTests(unittest.TestCase):
         plan = build_equity_trade_plan("AAPL", universe, config, ranking)
 
         self.assertIn("company", ranking.columns)
-        self.assertEqual(plan.action, "WAIT_FOR_BREAKOUT")
-        self.assertIsNotNone(plan.entry_price)
-        self.assertGreater(plan.entry_price, plan.close)
-        self.assertLess(plan.stop_loss, plan.entry_price)
-        self.assertGreater(plan.take_profit_1, plan.entry_price)
-        self.assertGreater(plan.take_profit_2, plan.take_profit_1)
-        self.assertIsNotNone(plan.risk_reward_1)
-        self.assertIsNotNone(plan.risk_reward_2)
-        self.assertGreaterEqual(plan.risk_reward_2, plan.risk_reward_1)
+        self.assertEqual(plan.action, "ROTATION_REBALANCE")
+        self.assertIsNone(plan.entry_price)
+        self.assertIsNone(plan.stop_loss)
+        self.assertIsNone(plan.take_profit_1)
+        self.assertIsNone(plan.take_profit_2)
+        self.assertIsNone(plan.risk_reward_1)
+        self.assertIsNone(plan.risk_reward_2)
+        self.assertIsNone(plan.strategy_exit)
+        self.assertGreater(plan.close, 0)
 
     def test_equity_scanner_builds_strategy_recommendations(self) -> None:
         index = pd.date_range("2025-01-01", periods=260, freq="1D", tz="UTC")
@@ -755,9 +755,11 @@ class StrategyTests(unittest.TestCase):
         ranking, recommendations, metrics = build_scan_recommendations(universe, config)
 
         self.assertEqual(recommendations["symbol"].tolist(), ["AAPL", "MSFT"])
-        self.assertTrue((recommendations["action"] == "WAIT_FOR_BREAKOUT").all())
+        self.assertTrue((recommendations["action"] == "ROTATION_REBALANCE").all())
         self.assertIn("score", recommendations.columns)
-        self.assertIn("risk_reward_2", recommendations.columns)
+        self.assertIn("reference_price", recommendations.columns)
+        self.assertNotIn("risk_reward_2", recommendations.columns)
+        self.assertNotIn("entry_price", recommendations.columns)
         self.assertIn("equity_selection_scan", set(metrics["strategy"]))
         self.assertIn("2330.TW", equity_scan_symbols("tw"))
 
@@ -994,7 +996,7 @@ class StrategyTests(unittest.TestCase):
         self.assertEqual(events, [])
         self.assertFalse(send_discord.called)
 
-    def test_equity_live_plan_uses_strategy_prices_and_equal_weights(self) -> None:
+    def test_equity_live_plan_uses_close_reference_and_equal_weights(self) -> None:
         recommendations = pd.DataFrame(
             [
                 {
@@ -1002,13 +1004,8 @@ class StrategyTests(unittest.TestCase):
                     "symbol": "AAPL",
                     "company": "Apple",
                     "selected": True,
-                    "action": "WAIT_FOR_BREAKOUT",
-                    "entry_price": 110.0,
-                    "stop_loss": 100.0,
-                    "take_profit_1": 120.0,
-                    "take_profit_2": 130.0,
-                    "risk_reward_1": 1.0,
-                    "risk_reward_2": 2.0,
+                    "action": "ROTATION_REBALANCE",
+                    "close": 108.0,
                     "rank": 1,
                 },
                 {
@@ -1016,13 +1013,8 @@ class StrategyTests(unittest.TestCase):
                     "symbol": "MSFT",
                     "company": "Microsoft",
                     "selected": True,
-                    "action": "WAIT_FOR_BREAKOUT",
-                    "entry_price": 220.0,
-                    "stop_loss": 200.0,
-                    "take_profit_1": 240.0,
-                    "take_profit_2": 260.0,
-                    "risk_reward_1": 1.0,
-                    "risk_reward_2": 2.0,
+                    "action": "ROTATION_REBALANCE",
+                    "close": 216.0,
                     "rank": 2,
                 },
             ]
@@ -1043,9 +1035,28 @@ class StrategyTests(unittest.TestCase):
         self.assertTrue((plan["side"] == "BUY").all())
         self.assertAlmostEqual(float(plan.iloc[0]["target_weight"]), 0.5)
         self.assertAlmostEqual(float(plan.iloc[0]["target_value"]), 5000.0)
-        self.assertAlmostEqual(float(plan.iloc[0]["reference_price"]), 110.0)
-        self.assertAlmostEqual(float(plan.iloc[0]["order_quantity"]), 5000.0 / 110.0)
-        self.assertAlmostEqual(float(plan.iloc[0]["risk_reward_2"]), 2.0)
+        self.assertAlmostEqual(float(plan.iloc[0]["reference_price"]), 108.0)
+        self.assertAlmostEqual(float(plan.iloc[0]["order_quantity"]), 5000.0 / 108.0)
+        self.assertNotIn("risk_reward_2", plan.columns)
+
+    def test_live_strategy_memory_persists_until_version_changes(self) -> None:
+        with TemporaryDirectory() as directory:
+            memory_path = Path(directory) / "memory.json"
+            plan = pd.DataFrame(
+                [
+                    {"symbol": "AAPL", "side": "BUY"},
+                    {"symbol": "MSFT", "side": "HOLD"},
+                ]
+            )
+            remember_live_plan(memory_path, "strategy-us-10000", "us", plan, strategy_version="v1")
+            current = load_live_strategy_memory(memory_path, strategy_version="v1")
+            reset = load_live_strategy_memory(memory_path, strategy_version="v2")
+
+        self.assertEqual(current["strategy_version"], "v1")
+        self.assertIn("strategy-us-10000", current["accounts"])
+        self.assertEqual(reset["strategy_version"], "v2")
+        self.assertEqual(reset["previous_strategy_version"], "v1")
+        self.assertEqual(reset["accounts"], {})
 
     def test_alert_message_includes_rr_when_available(self) -> None:
         message = format_alert_message(

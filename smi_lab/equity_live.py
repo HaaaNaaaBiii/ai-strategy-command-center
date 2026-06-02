@@ -1,9 +1,13 @@
 from __future__ import annotations
 
+from datetime import datetime, timezone
+import json
 from pathlib import Path
 
 import pandas as pd
 
+
+LIVE_STRATEGY_VERSION = "live-desk-v2-rotation-rebalance-only-2026-06-02"
 
 LIVE_ORDER_COLUMNS = [
     "account_id",
@@ -21,12 +25,6 @@ LIVE_ORDER_COLUMNS = [
     "status",
     "reference_price",
     "order_quantity",
-    "entry_price",
-    "stop_loss",
-    "take_profit_1",
-    "take_profit_2",
-    "risk_reward_1",
-    "risk_reward_2",
     "notes",
 ]
 
@@ -49,6 +47,64 @@ def _bool_series(frame: pd.DataFrame, column: str, default: bool) -> pd.Series:
     return values.astype(str).str.lower().isin({"true", "1", "yes", "y"})
 
 
+def utc_now() -> str:
+    return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+
+
+def load_live_strategy_memory(
+    path: str | Path,
+    strategy_version: str = LIVE_STRATEGY_VERSION,
+) -> dict[str, object]:
+    target = Path(path)
+    if target.exists():
+        try:
+            payload = json.loads(target.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            payload = {}
+    else:
+        payload = {}
+    if payload.get("strategy_version") == strategy_version:
+        payload.setdefault("accounts", {})
+        return payload
+    return {
+        "strategy_version": strategy_version,
+        "created_at": utc_now(),
+        "updated_at": utc_now(),
+        "reset_reason": "strategy_version_changed",
+        "previous_strategy_version": payload.get("strategy_version"),
+        "accounts": {},
+    }
+
+
+def save_live_strategy_memory(path: str | Path, memory: dict[str, object]) -> None:
+    target = Path(path)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    memory["updated_at"] = utc_now()
+    target.write_text(json.dumps(memory, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def remember_live_plan(
+    path: str | Path,
+    account_id: str,
+    market: str,
+    plan: pd.DataFrame,
+    strategy_version: str = LIVE_STRATEGY_VERSION,
+) -> dict[str, object]:
+    memory = load_live_strategy_memory(path, strategy_version)
+    accounts = memory.setdefault("accounts", {})
+    symbols = plan["symbol"].astype(str).tolist() if not plan.empty and "symbol" in plan else []
+    sides = plan["side"].astype(str).tolist() if not plan.empty and "side" in plan else []
+    accounts[account_id] = {
+        "market": market,
+        "last_generated_at": utc_now(),
+        "symbols": symbols,
+        "sides": sides,
+        "row_count": int(len(plan)),
+    }
+    save_live_strategy_memory(path, memory)
+    return memory
+
+
 def strategy_recommendations_for_market(
     recommendations: pd.DataFrame,
     market: str,
@@ -61,7 +117,9 @@ def strategy_recommendations_for_market(
     selected = _bool_series(frame, "selected", True)
     frame = frame[selected]
     if "action" in frame:
-        frame = frame[frame["action"].astype(str).isin(["WAIT_FOR_BREAKOUT", "BUY", "HOLD"])]
+        frame = frame[
+            frame["action"].astype(str).isin(["ROTATION_REBALANCE", "WAIT_FOR_BREAKOUT", "BUY", "HOLD"])
+        ]
     if "rank" in frame:
         frame = frame.sort_values("rank")
     return frame.reset_index(drop=True)
@@ -120,13 +178,7 @@ def build_equity_live_order_plan(
                 "status": "NO_STRATEGY_PICK",
                 "reference_price": 1.0,
                 "order_quantity": 0.0,
-                "entry_price": None,
-                "stop_loss": None,
-                "take_profit_1": None,
-                "take_profit_2": None,
-                "risk_reward_1": None,
-                "risk_reward_2": None,
-                "notes": "No current strategy recommendation; keep the sleeve in cash.",
+                "notes": "No current strategy recommendation; keep the sleeve in cash until the rotation model selects assets.",
             }
         ]
         return pd.DataFrame(rows, columns=LIVE_ORDER_COLUMNS)
@@ -139,15 +191,14 @@ def build_equity_live_order_plan(
         if not symbol:
             continue
         target_symbols.add(symbol)
-        entry = _float(row.get("entry_price"))
         close = _float(row.get("close"))
-        reference = entry or close
+        reference = close
         target_value = capital * target_weight
         current_value = float(current_values.get(symbol, 0.0))
         delta = target_value - current_value
         if delta > min_trade_value:
             side = "BUY"
-            status = "WAITING_FOR_STRATEGY_ENTRY"
+            status = "PLANNED_REBALANCE_BUY"
             quantity = delta / reference if reference > 0 else 0.0
         elif delta < -min_trade_value:
             side = "SELL"
@@ -165,7 +216,7 @@ def build_equity_live_order_plan(
                 "currency": currency,
                 "symbol": symbol,
                 "company": row.get("company", symbol),
-                "action": row.get("action", "WAIT_FOR_BREAKOUT"),
+                "action": row.get("action", "ROTATION_REBALANCE"),
                 "target_weight": target_weight,
                 "target_value": target_value,
                 "current_value": current_value,
@@ -174,13 +225,7 @@ def build_equity_live_order_plan(
                 "status": status,
                 "reference_price": reference,
                 "order_quantity": quantity,
-                "entry_price": row.get("entry_price"),
-                "stop_loss": row.get("stop_loss"),
-                "take_profit_1": row.get("take_profit_1"),
-                "take_profit_2": row.get("take_profit_2"),
-                "risk_reward_1": row.get("risk_reward_1"),
-                "risk_reward_2": row.get("risk_reward_2"),
-                "notes": "Generated from latest strategy scan. Broker submission is manual/disabled.",
+                "notes": "Generated from the backtested rotation/rebalance model. Reference price is latest scan close, not a separate entry signal.",
             }
         )
 
@@ -204,12 +249,6 @@ def build_equity_live_order_plan(
                 "status": "EXIT_NOT_IN_STRATEGY",
                 "reference_price": 0.0,
                 "order_quantity": 0.0,
-                "entry_price": None,
-                "stop_loss": None,
-                "take_profit_1": None,
-                "take_profit_2": None,
-                "risk_reward_1": None,
-                "risk_reward_2": None,
                 "notes": "Current holding is not in latest strategy picks.",
             }
         )

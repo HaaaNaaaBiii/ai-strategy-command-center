@@ -27,7 +27,13 @@ from smi_lab.equity_data import (
     DEFAULT_US_SYMBOLS,
     load_equity_universe,
 )
-from smi_lab.equity_live import build_equity_live_order_plan, save_live_order_plan
+from smi_lab.equity_live import (
+    LIVE_STRATEGY_VERSION,
+    build_equity_live_order_plan,
+    load_live_strategy_memory,
+    remember_live_plan,
+    save_live_order_plan,
+)
 from smi_lab.equity_signals import (
     add_company_names,
     build_equity_trade_plan,
@@ -48,7 +54,6 @@ from smi_lab.market_info import (
 )
 from smi_lab.broker_import import DEFAULT_IMPORT_DIR, sync_broker_exports
 from smi_lab.notifier import (
-    resolve_discord_mention,
     resolve_discord_webhook_url,
     send_discord,
     send_telegram,
@@ -61,7 +66,6 @@ from smi_lab.paper import (
     update_forward_tracking,
 )
 from smi_lab.position_planner import build_rebalance_plan
-from smi_lab.price_alerts import check_equity_price_alerts
 from smi_lab.technical import summarize_universe
 
 
@@ -80,9 +84,9 @@ NEWS_FILES = {
     "tw": OUTPUT_DIR / "news" / "tw_news.json",
     "us": OUTPUT_DIR / "news" / "us_news.json",
 }
-ALERT_STATE_FILE = OUTPUT_DIR / "alerts" / "equity_price_alerts_state.json"
 BROKER_IMPORT_DIR = DEFAULT_IMPORT_DIR
 EQUITY_LIVE_DIR = OUTPUT_DIR / "equity_live"
+LIVE_MEMORY_FILE = EQUITY_LIVE_DIR / "live_strategy_memory.json"
 
 
 I18N = {
@@ -113,10 +117,8 @@ I18N = {
         "news_tw": "\u53f0\u80a1",
         "news_us": "\u7f8e\u80a1",
         "stocks_title": "\u53f0\u80a1 / \u7f8e\u80a1\u7b56\u7565",
-        "stocks_subtitle": "\u4f9d\u5e02\u5834\u898f\u5247\u8abf\u6574\u7684\u6383\u76e4\u3001\u5716\u8868\u3001\u9032\u5834\u3001\u505c\u640d\u3001\u6b62\u76c8\u8207 RR\u3002",
+        "stocks_subtitle": "\u4f9d\u53f0\u7f8e\u80a1\u5e02\u5834\u898f\u5247\u8abf\u6574\u7684\u6383\u76e4\u3001\u52d5\u80fd\u6392\u540d\u3001\u8f2a\u52d5\u518d\u5e73\u8861\u8207\u7b56\u7565\u5716\u8868\u3002",
         "latest_scan": "\u6700\u65b0\u7b56\u7565\u6383\u76e4",
-        "price_alerts": "\u50f9\u683c\u63d0\u9192",
-        "check_alerts": "\u6aa2\u67e5\u50f9\u683c\u63d0\u9192",
     },
     "en": {
         "workspace": "Workspace",
@@ -145,10 +147,8 @@ I18N = {
         "news_tw": "Taiwan Stocks",
         "news_us": "U.S. Stocks",
         "stocks_title": "Taiwan / U.S. Stock Strategy",
-        "stocks_subtitle": "Market-adjusted scans, charts, entries, stops, take-profits, and RR.",
+        "stocks_subtitle": "Market-adjusted scans, momentum ranking, rotation rebalancing, and strategy charts.",
         "latest_scan": "Latest Strategy Scan",
-        "price_alerts": "Price Alerts",
-        "check_alerts": "Check price alerts",
     },
 }
 
@@ -207,13 +207,11 @@ def recommendation_cards(frame: pd.DataFrame, title: str, limit: int = 3) -> Non
             st.markdown(f"**{row.get('symbol', '-')}**")
             st.caption(str(row.get("company", "")))
             st.caption(str(row.get("action", "-")))
-            level_cols = st.columns(2)
-            level_cols[0].metric("Entry", price(row.get("entry_price")))
-            level_cols[1].metric("SL", price(row.get("stop_loss")))
-            level_cols[0].metric("TP1", price(row.get("take_profit_1")))
-            level_cols[1].metric("TP2", price(row.get("take_profit_2")))
-            if "risk_reward_2" in row and not pd.isna(row.get("risk_reward_2")):
-                st.metric("RR to TP2", f"{float(row.get('risk_reward_2')):.2f}")
+            metric_cols = st.columns(2)
+            metric_cols[0].metric("Reference", price(row.get("reference_price", row.get("close"))))
+            metric_cols[1].metric("Rank", "-" if pd.isna(row.get("rank")) else int(float(row.get("rank"))))
+            metric_cols[0].metric("Score", money(row.get("score")))
+            metric_cols[1].metric("Short mom", pct(row.get("short_momentum_pct")))
 
 
 def safe_float(value: object, default: float = 0.0) -> float:
@@ -668,32 +666,19 @@ def crypto_strategy_plan(symbol: str, frame: pd.DataFrame, target_weight: float)
     current_atr = float(atr_values.iloc[-1]) if not atr_values.empty else max(close * 0.03, 0.01)
     trend_values = ema(frame["close"].astype(float), 50).dropna()
     trend = float(trend_values.iloc[-1]) if not trend_values.empty else close
-    breakout_values = frame["high"].astype(float).shift(1).rolling(20, min_periods=5).max().dropna()
-    breakout = float(breakout_values.iloc[-1]) if not breakout_values.empty else close
-    entry = max(breakout + 0.10 * current_atr, trend + 0.10 * current_atr)
-    levels: dict[str, float | None] = {
-        "Watch Entry" if target_weight <= 0 else "Entry": entry,
-        "Strategy Exit": max(entry - 2.5 * current_atr, trend),
-    }
+    levels: dict[str, float | None] = {}
     action = "HOLD_CASH"
-    reason = "No active allocation. Wait for the strategy to rotate back in before placing a live order."
+    reason = "No active allocation. Keep cash until the strategy rotates back into this asset."
     if target_weight > 0:
-        action = "WAIT_FOR_BREAKOUT"
-        reason = "Active target weight exists, but entry still waits for the strategy breakout trigger."
-        levels.update(
-            {
-                "Stop Loss": max(entry - 2.0 * current_atr, 0.0),
-                "TP1": entry + 2.0 * current_atr,
-                "TP2": entry + 4.0 * current_atr,
-            }
-        )
+        action = "ROTATION_REBALANCE"
+        reason = "Active target weight exists. Live execution is a rebalance intent using the latest executable price as reference."
     return {
         "symbol": symbol,
         "action": action,
         "reason": reason,
         "close": close,
         "target_weight": target_weight,
-        "entry_trigger": entry,
+        "reference_price": close,
         "atr": current_atr,
         "trend": trend,
         "levels": levels,
@@ -752,13 +737,7 @@ def append_live_plan_orders(plan: pd.DataFrame) -> int:
         quantity = safe_float(row.get("order_quantity"))
         if quantity <= 0:
             continue
-        rr1 = row.get("risk_reward_1")
-        rr2 = row.get("risk_reward_2")
-        rr_note = (
-            f" RR1={float(rr1):.2f} RR2={float(rr2):.2f}"
-            if not pd.isna(rr1) and not pd.isna(rr2)
-            else ""
-        )
+        reference_price = safe_float(row.get("reference_price"))
         orders = append_order(
             ORDERS_FILE,
             OrderTracker(
@@ -770,12 +749,12 @@ def append_live_plan_orders(plan: pd.DataFrame) -> int:
                 side=str(row.get("side", "")),
                 status=str(row.get("status", "PLANNED")),
                 quantity=quantity,
-                entry_price=safe_float(row.get("entry_price"), safe_float(row.get("reference_price"))),
-                stop_loss=safe_float(row.get("stop_loss")),
-                take_profit_1=safe_float(row.get("take_profit_1")),
-                take_profit_2=safe_float(row.get("take_profit_2")),
+                entry_price=reference_price,
+                stop_loss=0.0,
+                take_profit_1=0.0,
+                take_profit_2=0.0,
                 strategy="equity_live_strategy_scan",
-                notes=f"{row.get('notes', '')}{rr_note}",
+                notes=f"{row.get('notes', '')} Reference price records the planning price; no unbacktested TP/SL overlay.",
             ),
         )
         appended = len(orders)
@@ -824,6 +803,7 @@ def render_live_equity_desk(
     )
     plan_path = EQUITY_LIVE_DIR / f"{market}_live_order_plan.csv"
     save_live_order_plan(plan, plan_path)
+    memory = remember_live_plan(LIVE_MEMORY_FILE, account_id, market, plan)
     buys = plan[plan["side"].astype(str) == "BUY"] if not plan.empty else pd.DataFrame()
     sells = plan[plan["side"].astype(str) == "SELL"] if not plan.empty else pd.DataFrame()
     col_1, col_2, col_3 = st.columns(3)
@@ -841,19 +821,109 @@ def render_live_equity_desk(
         "target_weight",
         "target_value",
         "delta_value",
-        "entry_price",
-        "stop_loss",
-        "take_profit_1",
-        "take_profit_2",
-        "risk_reward_1",
-        "risk_reward_2",
+        "reference_price",
         "order_quantity",
+        "notes",
     ]
     st.dataframe(plan[display_columns], hide_index=True, width="stretch")
     st.caption(f"Saved plan: `{plan_path}`")
+    st.caption(f"Memory strategy version: `{memory.get('strategy_version')}`")
     if st.button(f"Append {market.upper()} live intents to order tracker"):
         total_rows = append_live_plan_orders(plan)
         st.success(f"Order tracker updated. Total rows: {total_rows}.")
+
+
+def render_live_crypto_desk(
+    accounts: pd.DataFrame,
+    positions: pd.DataFrame,
+) -> None:
+    st.subheader("Crypto Strategy Sleeve")
+    st.caption(
+        "Uses the current crypto allocation strategy and live reference prices to generate Pionex order intents. "
+        "No exchange order is submitted from this page."
+    )
+    crypto_accounts = accounts[accounts["market"].astype(str) == "crypto"] if not accounts.empty else pd.DataFrame()
+    latest_equity = (
+        pd.to_numeric(crypto_accounts["equity"], errors="coerce").dropna().iloc[-1]
+        if not crypto_accounts.empty and "equity" in crypto_accounts and not pd.to_numeric(crypto_accounts["equity"], errors="coerce").dropna().empty
+        else 1_000.0
+    )
+    col_a, col_b, col_c = st.columns(3)
+    broker = col_a.text_input("Crypto broker", value="Pionex")
+    account_id = col_b.text_input("Crypto strategy account", value="strategy-crypto-pionex")
+    capital = col_c.number_input("Crypto controlled capital (USDT)", min_value=0.0, value=float(latest_equity), step=100.0)
+    min_trade_value = st.number_input("Crypto minimum order value (USDT)", min_value=0.0, value=25.0, step=5.0)
+    try:
+        universe = load_crypto_data(crypto_symbols, crypto_interval, crypto_bars, refresh_crypto)
+        config, offsets, _ = load_allocation_strategy()
+        snapshot = allocation_snapshot(universe, config, offsets)
+        allocation = aggregate_snapshot(snapshot)
+        price_lookup = {
+            symbol: float(frame["close"].iloc[-1])
+            for symbol, frame in universe.items()
+            if not frame.empty
+        }
+        override_account = pd.DataFrame(
+            [
+                {
+                    "account_id": account_id,
+                    "broker": broker,
+                    "market": "crypto",
+                    "currency": "USDT",
+                    "cash": 0.0,
+                    "equity": capital,
+                    "updated_at": "live_desk_override",
+                    "notes": "Live Desk strategy sleeve capital.",
+                }
+            ]
+        )
+        planning_accounts = pd.concat([accounts, override_account], ignore_index=True)
+        plan = build_rebalance_plan(
+            planning_accounts,
+            positions,
+            allocation,
+            "crypto",
+            account_id=account_id,
+            price_lookup=price_lookup,
+            min_trade_value=min_trade_value,
+        )
+        if not plan.empty:
+            plan = plan.copy()
+            plan.insert(1, "broker", broker)
+            plan.insert(3, "currency", "USDT")
+            plan.insert(5, "company", plan["symbol"].astype(str).map(company_name))
+            plan.insert(6, "action", "ROTATION_REBALANCE")
+        plan_path = EQUITY_LIVE_DIR / "crypto_live_order_plan.csv"
+        save_live_order_plan(plan, plan_path)
+        memory = remember_live_plan(LIVE_MEMORY_FILE, account_id, "crypto", plan)
+        buys = plan[plan["side"].astype(str) == "BUY"] if not plan.empty else pd.DataFrame()
+        sells = plan[plan["side"].astype(str) == "SELL"] if not plan.empty else pd.DataFrame()
+        col_1, col_2, col_3 = st.columns(3)
+        col_1.metric("Strategy capital", f"USDT {money(capital)}")
+        col_2.metric("Buy intents", len(buys))
+        col_3.metric("Sell intents", len(sells))
+        display_columns = [
+            "symbol",
+            "side",
+            "status",
+            "target_weight",
+            "target_value",
+            "delta_value",
+            "reference_price",
+            "order_quantity",
+            "notes",
+        ]
+        if not plan.empty:
+            st.dataframe(plan[[c for c in display_columns if c in plan]], hide_index=True, width="stretch")
+        else:
+            st.info("No crypto live order plan generated.")
+        st.caption(f"Saved plan: `{plan_path}`")
+        st.caption(f"Memory strategy version: `{memory.get('strategy_version')}`")
+        if st.button("Append CRYPTO live intents to order tracker"):
+            total_rows = append_live_plan_orders(plan)
+            st.success(f"Order tracker updated. Total rows: {total_rows}.")
+    except Exception as exc:
+        st.error(f"Crypto live plan failed: {exc}")
 
 
 NAV_OPTIONS = [
@@ -995,7 +1065,7 @@ elif page == "Crypto":
         "Signal center, forward paper tracking, and Pionex live-account order tracking. Execution remains manual until API risk controls are explicitly enabled.",
     )
     signal_tab, tracking_tab, chart_tab, notify_tab = st.tabs(
-        ["Signal Center", "Forward Tracking", "K-Line & Levels", "Notification"]
+        ["Signal Center", "Forward Tracking", "K-Line & Strategy", "Notification"]
     )
     with signal_tab:
         if st.button("Refresh crypto signal", type="primary"):
@@ -1023,9 +1093,8 @@ elif page == "Crypto":
                     st.plotly_chart(plot_allocation(allocation), width="stretch")
                 with col_b:
                     st.info(
-                        "Signal rule: active allocation means the strategy has selected a sleeve, "
-                        "but order entry still waits for the breakout trigger. If allocation is cash, "
-                        "the correct action is no trade."
+                        "Signal rule: active allocation means the strategy has selected a sleeve. "
+                        "Live action is rotation/rebalance; if allocation is cash, the correct action is no trade."
                     )
                     st.json(metadata, expanded=False)
                 with st.expander("Technical and allocation details"):
@@ -1100,12 +1169,12 @@ elif page == "Crypto":
             cols = st.columns(5)
             cols[0].metric("Action", str(plan["action"]))
             cols[1].metric("Target weight", pct(target_weight * 100.0))
-            cols[2].metric("Entry trigger", price(plan["entry_trigger"]))
+            cols[2].metric("Reference", price(plan["reference_price"]))
             cols[3].metric("ATR", price(plan["atr"]))
             cols[4].metric("Close", price(plan["close"]))
             st.caption(str(plan["reason"]))
             st.plotly_chart(
-                chart_ohlc(universe[symbol], f"{symbol} strategy levels", levels, 50),
+                chart_ohlc(universe[symbol], f"{symbol} strategy chart", levels, 50),
                 width="stretch",
             )
     with notify_tab:
@@ -1163,7 +1232,7 @@ elif page == "Stocks":
             cols[3].metric("Updated UTC", str(scan_summary.get("scan_time_utc", "-"))[:19])
         if not scan_recommendations.empty:
             st.plotly_chart(
-                plot_ranking(scan_recommendations, f"{title}: Current Recommended Entries"),
+                plot_ranking(scan_recommendations, f"{title}: Current Rotation Picks"),
                 width="stretch",
             )
             display_cols = [
@@ -1175,19 +1244,19 @@ elif page == "Stocks":
                     "rank",
                     "score",
                     "close",
-                    "entry_price",
-                    "stop_loss",
-                    "take_profit_1",
-                    "take_profit_2",
-                    "risk_reward_1",
-                    "risk_reward_2",
+                    "reference_price",
+                    "short_momentum_pct",
+                    "long_momentum_pct",
+                    "annualized_volatility_pct",
+                    "above_trend",
+                    "risk_on",
                     "reason",
                 )
                 if column in scan_recommendations
             ]
             st.dataframe(scan_recommendations[display_cols], hide_index=True, width="stretch")
         else:
-            st.info("No hourly scan output yet. Run `scan_equity_signals.py` or wait for the hourly automation.")
+            st.info("No scheduled scan output yet. Run `scan_equity_signals.py` or wait for the market-time automation.")
         with st.expander("Latest full scan ranking", expanded=False):
             if scan_ranking.empty:
                 st.caption("No scan ranking file exists yet.")
@@ -1285,15 +1354,17 @@ elif page == "Stocks":
             return
         plan = build_equity_trade_plan(selected_symbol, universe, config, ranking)
         st.subheader(f"{selected_symbol} | {plan.company}")
-        cols = st.columns(8)
+        selected_rank = (
+            ranking[ranking["symbol"].astype(str) == selected_symbol].head(1).to_dict("records")
+        )
+        ranked = selected_rank[0] if selected_rank else {}
+        cols = st.columns(6)
         cols[0].metric("Action", plan.action)
-        cols[1].metric("Entry", price(plan.entry_price))
-        cols[2].metric("Strategy exit", price(plan.strategy_exit))
-        cols[3].metric("Stop loss", price(plan.stop_loss))
-        cols[4].metric("TP1", price(plan.take_profit_1))
-        cols[5].metric("TP2", price(plan.take_profit_2))
-        cols[6].metric("RR1", "-" if plan.risk_reward_1 is None else f"{plan.risk_reward_1:.2f}")
-        cols[7].metric("RR2", "-" if plan.risk_reward_2 is None else f"{plan.risk_reward_2:.2f}")
+        cols[1].metric("Reference", price(plan.close))
+        cols[2].metric("Rank", "-" if plan.rank is None else plan.rank)
+        cols[3].metric("Score", money(ranked.get("score")))
+        cols[4].metric("Short mom", pct(ranked.get("short_momentum_pct")))
+        cols[5].metric("Long mom", pct(ranked.get("long_momentum_pct")))
         st.caption(plan.reason)
         markers: list[pd.Timestamp] = []
         if not result.rebalances.empty:
@@ -1303,13 +1374,7 @@ elif page == "Stocks":
                 )
             ]
             markers = [pd.Timestamp(value) for value in selected_events["timestamp"].tolist()]
-        levels = {
-            "Entry" if plan.entry_price is not None else "Watch Entry": plan.entry_price,
-            "Strategy Exit": plan.strategy_exit,
-            "Stop Loss": plan.stop_loss,
-            "TP1": plan.take_profit_1,
-            "TP2": plan.take_profit_2,
-        }
+        levels = {"Trend EMA": plan.trend_level}
         st.plotly_chart(
             chart_ohlc(
                 universe[selected_symbol],
@@ -1339,36 +1404,11 @@ elif page == "Stocks":
             )
             st.plotly_chart(fig, width="stretch")
 
-    tw_tab, us_tab, alerts_tab = st.tabs(["Taiwan Stocks", "U.S. Stocks", tr("price_alerts")])
+    tw_tab, us_tab = st.tabs(["Taiwan Stocks", "U.S. Stocks"])
     with tw_tab:
         render_equity_page("Taiwan Stocks", "tw", equity_scan_symbols("tw"))
     with us_tab:
         render_equity_page("U.S. Stocks", "us", equity_scan_symbols("us"))
-    with alerts_tab:
-        st.subheader(tr("price_alerts"))
-        st.caption("Uses latest scan recommendations. Configure DISCORD_WEBHOOK_URL and DISCORD_MENTION for scheduled alerts.")
-        webhook = st.text_input("Discord webhook URL", value=resolve_discord_webhook_url(), type="password")
-        mention = st.text_input("Discord mention/tag", value=resolve_discord_mention(), placeholder="<@USER_ID>")
-        dry_run = st.checkbox("Dry run", value=True)
-        if st.button(tr("check_alerts"), type="primary"):
-            try:
-                events = check_equity_price_alerts(
-                    webhook_url=webhook or None,
-                    mention=mention,
-                    notify=not dry_run,
-                    record_state=not dry_run,
-                )
-                if not events:
-                    st.info("No price alert triggered.")
-                else:
-                    st.success(f"{len(events)} alert(s) triggered.")
-                    st.dataframe(pd.DataFrame([event.to_dict() for event in events]), hide_index=True, width="stretch")
-            except Exception as exc:
-                st.error(f"Price alert check failed: {exc}")
-        state = read_json_or_empty(ALERT_STATE_FILE)
-        if state:
-            with st.expander("Alert state"):
-                st.json(state, expanded=False)
 
 elif page == "Live Desk":
     hero(
@@ -1379,12 +1419,15 @@ elif page == "Live Desk":
         "This page creates live order intents from the current strategy. It does not submit orders to Firstrade or Cathay Securities."
     )
     latest_recommendations = read_csv_or_empty(EQUITY_SCAN_DIR / "latest_recommendations.csv")
+    tracked_accounts = load_table(ACCOUNTS_FILE, ACCOUNT_COLUMNS)
     tracked_positions = load_table(POSITIONS_FILE, POSITION_COLUMNS)
     if latest_recommendations.empty:
         st.info("No latest strategy recommendations found. Run the equity scan first.")
-    us_live_tab, tw_live_tab, strategy_alert_tab = st.tabs(
-        ["U.S. $10,000 Sleeve", "Taiwan NT$300,000 Sleeve", "Strategy Price Alerts"]
+    crypto_live_tab, us_live_tab, tw_live_tab, memory_tab = st.tabs(
+        ["Crypto Strategy Sleeve", "U.S. $10,000 Sleeve", "Taiwan NT$300,000 Sleeve", "Strategy Memory"]
     )
+    with crypto_live_tab:
+        render_live_crypto_desk(tracked_accounts, tracked_positions)
     with us_live_tab:
         render_live_equity_desk(
             market="us",
@@ -1409,35 +1452,15 @@ elif page == "Live Desk":
             recommendations=latest_recommendations,
             positions=tracked_positions,
         )
-    with strategy_alert_tab:
-        st.subheader("Strategy-selected price alerts")
-        st.caption("Alerts use the latest selected strategy rows and their exact entry, stop, TP1, and TP2 values.")
-        alert_columns = [
-            "market",
-            "symbol",
-            "company",
-            "action",
-            "entry_price",
-            "stop_loss",
-            "take_profit_1",
-            "take_profit_2",
-            "risk_reward_1",
-            "risk_reward_2",
-        ]
-        if latest_recommendations.empty:
-            st.info("No strategy alert watchlist yet.")
-        else:
-            st.dataframe(latest_recommendations[[c for c in alert_columns if c in latest_recommendations]], hide_index=True, width="stretch")
-        if st.button("Check strategy price alerts", type="primary"):
-            try:
-                events = check_equity_price_alerts(notify=True, record_state=True)
-                if events:
-                    st.success(f"{len(events)} Discord alert(s) sent.")
-                    st.dataframe(pd.DataFrame([event.to_dict() for event in events]), hide_index=True, width="stretch")
-                else:
-                    st.info("No strategy price alert triggered.")
-            except Exception as exc:
-                st.error(f"Strategy price alert check failed: {exc}")
+    with memory_tab:
+        st.subheader("Live strategy memory")
+        st.caption(
+            "Memory is stored under outputs and is not committed to Git. It persists across pushes. "
+            "It resets only when LIVE_STRATEGY_VERSION changes after a strategy/backtest update."
+        )
+        memory = load_live_strategy_memory(LIVE_MEMORY_FILE)
+        st.metric("Strategy version", memory.get("strategy_version", LIVE_STRATEGY_VERSION))
+        st.json(memory, expanded=False)
 
 elif page == "Accounts":
     hero(
@@ -1606,26 +1629,7 @@ elif page == "Accounts":
                     price_lookup=price_lookup,
                     min_trade_value=min_trade_value,
                 )
-                enriched = plan.copy()
-                if not enriched.empty:
-                    enriched["entry_trigger"] = None
-                    enriched["stop_loss"] = None
-                    enriched["take_profit_1"] = None
-                    enriched["take_profit_2"] = None
-                    for idx, row in enriched.iterrows():
-                        symbol = str(row["symbol"])
-                        if symbol in universe and str(row["side"]) == "BUY":
-                            trade_plan = crypto_strategy_plan(
-                                symbol,
-                                universe[symbol],
-                                float(row["target_weight"]),
-                            )
-                            levels = trade_plan["levels"]
-                            enriched.at[idx, "entry_trigger"] = trade_plan["entry_trigger"]
-                            enriched.at[idx, "stop_loss"] = levels.get("Stop Loss")
-                            enriched.at[idx, "take_profit_1"] = levels.get("TP1")
-                            enriched.at[idx, "take_profit_2"] = levels.get("TP2")
-                st.session_state["position_plan"] = enriched
+                st.session_state["position_plan"] = plan
                 st.success("Position plan generated.")
             except Exception as exc:  # pragma: no cover - Streamlit displays runtime data issues.
                 st.error(f"Position plan failed: {exc}")
@@ -1648,7 +1652,7 @@ elif page == "Accounts":
                     quantity_value = safe_float(row.get("order_quantity"))
                     if quantity_value <= 0:
                         continue
-                    entry = safe_float(row.get("entry_trigger"), safe_float(row.get("reference_price")))
+                    reference = safe_float(row.get("reference_price"))
                     orders = append_order(
                         ORDERS_FILE,
                         OrderTracker(
@@ -1660,12 +1664,12 @@ elif page == "Accounts":
                             side=str(row["side"]),
                             status="PLANNED",
                             quantity=quantity_value,
-                            entry_price=entry,
-                            stop_loss=safe_float(row.get("stop_loss")),
-                            take_profit_1=safe_float(row.get("take_profit_1")),
-                            take_profit_2=safe_float(row.get("take_profit_2")),
+                            entry_price=reference,
+                            stop_loss=0.0,
+                            take_profit_1=0.0,
+                            take_profit_2=0.0,
                             strategy="market_alpha_staggered_position_plan",
-                            notes=str(row.get("notes", "")),
+                            notes=f"{row.get('notes', '')} Reference price only; no unbacktested TP/SL overlay.",
                         ),
                     )
                     appended = len(orders)
@@ -1684,11 +1688,7 @@ elif page == "Accounts":
         side = col_f.selectbox("Side", ["BUY", "SELL"], index=0)
         status = col_g.selectbox("Status", ["PLANNED", "SUBMITTED", "FILLED", "PARTIAL", "CANCELLED"], index=0)
         quantity = col_h.number_input("Order quantity", min_value=0.0, value=0.0, step=0.001, format="%.6f")
-        col_i, col_j, col_k, col_l = st.columns(4)
-        entry_price = col_i.number_input("Entry price", min_value=0.0, value=0.0, step=1.0)
-        stop_loss = col_j.number_input("Stop loss", min_value=0.0, value=0.0, step=1.0)
-        take_profit_1 = col_k.number_input("TP1", min_value=0.0, value=0.0, step=1.0)
-        take_profit_2 = col_l.number_input("TP2", min_value=0.0, value=0.0, step=1.0)
+        reference_price = st.number_input("Reference price", min_value=0.0, value=0.0, step=1.0)
         strategy = st.text_input("Strategy", value="market_alpha_staggered")
         notes = st.text_area("Order notes", value="")
         if st.button("Append order tracker row", type="primary"):
@@ -1703,10 +1703,10 @@ elif page == "Accounts":
                     side=side,
                     status=status,
                     quantity=quantity,
-                    entry_price=entry_price,
-                    stop_loss=stop_loss,
-                    take_profit_1=take_profit_1,
-                    take_profit_2=take_profit_2,
+                    entry_price=reference_price,
+                    stop_loss=0.0,
+                    take_profit_1=0.0,
+                    take_profit_2=0.0,
                     strategy=strategy,
                     notes=notes,
                 ),
@@ -1857,7 +1857,6 @@ elif page == "Records":
         NEWS_FILES["crypto"],
         NEWS_FILES["tw"],
         NEWS_FILES["us"],
-        ALERT_STATE_FILE,
         ACCOUNTS_FILE,
         POSITIONS_FILE,
         ORDERS_FILE,

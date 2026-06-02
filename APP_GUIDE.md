@@ -5,9 +5,9 @@ This project ships as a Streamlit web app. It is cross-platform because it runs 
 ## What This App Provides
 
 - Dashboard: market snapshot, news, crypto live-readiness, and tracked account/position status.
-- Crypto: signal center, forward paper tracking, allocation donut chart, candlestick chart levels, and notification controls.
-- Stocks: Taiwan and U.S. strategy ranking charts, company names, selectable candlestick charts, entry/exit/SL/TP levels, and benchmark comparison.
-- Live Desk: strategy-controlled U.S. 10,000 USD and Taiwan 300,000 TWD sleeves that generate live order intents from the latest equity scan.
+- Crypto: signal center, forward paper tracking, allocation chart, candlestick strategy chart, and notification controls.
+- Stocks: Taiwan and U.S. strategy ranking charts, company names, selectable candlestick charts, rotation/rebalance signals, and benchmark comparison.
+- Live Desk: strategy-controlled crypto, U.S. 10,000 USD, and Taiwan 300,000 TWD sleeves that generate live rebalance intents from the current backtested strategy.
 - Accounts: Pionex crypto account tracking, Cathay Securities Taiwan stock tracking, Firstrade U.S. stock tracking, position records, and order tracking.
 - Research: current optimization stance and generated research files.
 - Records: generated CSV/JSON outputs for audit and review.
@@ -19,15 +19,15 @@ The app currently records account state and order plans. It does not place live 
 
 Cathay Securities and Firstrade execution remains manual by design. The app can now sync exported holding CSV files, record account equity, positions, and planned orders, but the actual stock orders remain user-executed.
 
-The Live Desk turns the latest strategy-selected rows into broker-ready order intents for a U.S. sleeve and a Taiwan sleeve. It records entry, stop, TP1, TP2, RR, target value, and order quantity, but it still does not submit orders to Firstrade or Cathay Securities.
+The Live Desk turns the latest strategy-selected rows into broker-ready rebalance intents for crypto, U.S., and Taiwan sleeves. It records target weight, target value, current value, reference price, delta, and order quantity. It does not show entry, stop, TP, or RR for live execution because those overlays are not part of the current equity backtest.
 
 ## Strategy Signal Boundary
 
 The strategy supports cash/no-trade states. `HOLD_CASH` and `HOLD_CASH_OR_EXIT` are valid outputs, not errors.
 
-Entry prices are strategy trigger prices. The app does not use the latest close as a recommended entry. For selected assets, the entry waits for a breakout trigger derived from recent highs, trend level, and ATR. Stop loss and TP levels are then calculated from that trigger price.
+The current live equity strategy is a dynamic rotation/rebalance model. It does not have a separately backtested entry, take-profit, or stop-loss layer. For live order planning, the reference price is the latest available scan/market price used to estimate order quantity; the real fill price is whatever the broker/exchange executes.
 
-The detailed equity strategy review is in `docs/equity_strategy_review.md`. It separates the backtested selection/rebalance model from the execution overlay used for entry, stop loss, TP, and RR alerts.
+The detailed equity strategy review is in `docs/equity_strategy_review.md`. It separates the backtested selection/rebalance model from the removed execution overlay that used entry, stop loss, TP, and RR.
 
 ## Data Reliability
 
@@ -79,11 +79,13 @@ The latest equity optimization selected Top 3 sleeves for both markets. Taiwan u
 - Taiwan strategy: `+492.37%` versus 0050.TW `+148.55%`, max drawdown `-19.55%`.
 - U.S. strategy: `+207.82%` versus SPY `+43.27%`, max drawdown `-18.41%`.
 
-Stock trade plans include RR to TP1 and TP2. Price alerts can be checked manually:
+Stock trade plans no longer expose entry, stop, TP, or RR because that execution overlay is not part of the current backtested live strategy. The legacy price-level alert script is disabled by default:
 
 ```powershell
 .\.venv\Scripts\python.exe check_price_alerts.py
 ```
+
+It will print a disabled message unless `--legacy-level-alerts` is passed intentionally. Future production alerts should be based on strategy rebalance events, such as new selected symbols, target-weight changes, or holdings dropping out of the selected sleeve.
 
 Discord alerts require:
 
@@ -97,7 +99,7 @@ The notifier also reads local Git-ignored fallbacks:
 - `data/secrets/discord_webhook_url.txt`
 - `data/secrets/discord_mention.txt`
 
-The `Equity price alert check` automation runs hourly. If `DISCORD_WEBHOOK_URL` is not configured, it skips sending alerts and prints a configuration message instead of consuming alert state.
+The old `Equity price alert check` automation is therefore harmless if it still runs: without the explicit legacy flag, it does not send level alerts or consume alert state.
 
 ## Strategy Optimization Status
 

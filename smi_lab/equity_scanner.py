@@ -29,13 +29,7 @@ SCAN_COLUMNS = [
     "rank",
     "score",
     "close",
-    "entry_price",
-    "stop_loss",
-    "take_profit_1",
-    "take_profit_2",
-    "risk_reward_1",
-    "risk_reward_2",
-    "strategy_exit",
+    "reference_price",
     "short_momentum_pct",
     "long_momentum_pct",
     "annualized_volatility_pct",
@@ -104,6 +98,7 @@ def build_scan_recommendations(
         row = plan.to_dict()
         row.update(
             {
+                "reference_price": plan.close,
                 "score": ranked.get("score"),
                 "short_momentum_pct": ranked.get("short_momentum_pct"),
                 "long_momentum_pct": ranked.get("long_momentum_pct"),

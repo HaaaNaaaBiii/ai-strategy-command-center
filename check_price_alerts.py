@@ -14,11 +14,22 @@ def parser() -> argparse.ArgumentParser:
     command.add_argument("--mention", default=resolve_discord_mention())
     command.add_argument("--no-refresh", action="store_true")
     command.add_argument("--dry-run", action="store_true")
+    command.add_argument(
+        "--legacy-level-alerts",
+        action="store_true",
+        help="Explicitly enable old entry/stop/TP price-level alerts. Disabled by default.",
+    )
     return command
 
 
 def main() -> None:
     args = parser().parse_args()
+    if not args.legacy_level_alerts:
+        print(
+            "Equity price-level alerts are disabled because entry/stop/TP/RR "
+            "are not part of the current backtested live strategy."
+        )
+        return
     if not args.dry_run and not args.webhook_url:
         print("DISCORD_WEBHOOK_URL is not configured; alert check skipped.")
         return

@@ -197,49 +197,29 @@ def build_equity_trade_plan(
     trend = _latest_value(ema(frame["close"].astype(float), config.trend_period))
     if pd.isna(trend) or trend <= 0:
         trend = close
-    breakout = _latest_value(
-        frame["high"].astype(float).shift(1).rolling(20, min_periods=5).max()
-    )
-    if pd.isna(breakout) or breakout <= 0:
-        breakout = close
     selected = symbol in selected_symbols
     eligible = bool(
         not ranking.empty
         and symbol in set(ranking.loc[ranking["eligible"], "symbol"].tolist())
     )
     rank = ranked_symbols.index(symbol) + 1 if symbol in ranked_symbols else None
+    entry = None
+    stop = None
+    take_profit_1 = None
+    take_profit_2 = None
+    risk_reward_1 = None
+    risk_reward_2 = None
+    strategy_exit = None
     if selected:
-        entry = max(breakout + 0.10 * current_atr, trend + 0.10 * current_atr)
-        stop = max(entry - 2.0 * current_atr, trend * 0.98)
-        take_profit_1 = entry + 2.0 * current_atr
-        take_profit_2 = entry + 4.0 * current_atr
-        strategy_exit = max(entry - 2.5 * current_atr, trend)
-        risk = max(entry - stop, 0.0)
-        risk_reward_1 = (take_profit_1 - entry) / risk if risk else None
-        risk_reward_2 = (take_profit_2 - entry) / risk if risk else None
-        action = "WAIT_FOR_BREAKOUT"
+        action = "ROTATION_REBALANCE"
         reason = (
-            "Eligible and inside the current top-N sleeve. Entry waits for the "
-            "strategy breakout trigger instead of chasing the latest close."
+            "Eligible and inside the current top-N sleeve. The live action is a "
+            "rotation/rebalance intent; latest close is only the planning reference price."
         )
     elif eligible:
-        entry = None
-        stop = None
-        take_profit_1 = None
-        take_profit_2 = None
-        risk_reward_1 = None
-        risk_reward_2 = None
-        strategy_exit = trend
         action = "HOLD_CASH"
         reason = "Eligible but not inside the current top-N sleeve; keep cash unless it rotates in."
     else:
-        entry = None
-        stop = None
-        take_profit_1 = None
-        take_profit_2 = None
-        risk_reward_1 = None
-        risk_reward_2 = None
-        strategy_exit = trend
         action = "HOLD_CASH_OR_EXIT"
         reason = "Fails at least one market, trend, momentum, or volatility filter."
     return EquityTradePlan(
