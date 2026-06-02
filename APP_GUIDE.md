@@ -113,6 +113,12 @@ Latest optimization output is written to `outputs/crypto_optimization/`. The str
 .\.venv\Scripts\python.exe -m streamlit run app.py
 ```
 
+To restart the local website in the background on Windows, use the launcher:
+
+```powershell
+.\.venv\Scripts\python.exe start_streamlit.py
+```
+
 Open:
 
 ```text
