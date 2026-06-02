@@ -19,6 +19,9 @@ def parser() -> argparse.ArgumentParser:
 
 def main() -> None:
     args = parser().parse_args()
+    if not args.dry_run and not args.webhook_url:
+        print("DISCORD_WEBHOOK_URL is not configured; alert check skipped.")
+        return
     events = check_equity_price_alerts(
         recommendations_path=args.recommendations,
         state_path=args.state,
