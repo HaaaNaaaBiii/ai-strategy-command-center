@@ -27,6 +27,7 @@ from smi_lab.equity_data import (
     DEFAULT_US_SYMBOLS,
     load_equity_universe,
 )
+from smi_lab.equity_live import build_equity_live_order_plan, save_live_order_plan
 from smi_lab.equity_signals import (
     add_company_names,
     build_equity_trade_plan,
@@ -81,39 +82,41 @@ NEWS_FILES = {
 }
 ALERT_STATE_FILE = OUTPUT_DIR / "alerts" / "equity_price_alerts_state.json"
 BROKER_IMPORT_DIR = DEFAULT_IMPORT_DIR
+EQUITY_LIVE_DIR = OUTPUT_DIR / "equity_live"
 
 
 I18N = {
     "zh": {
-        "workspace": "工作區",
-        "control_panel": "控制面板",
-        "data_controls": "資料控制",
-        "language": "語言",
-        "dashboard": "儀錶板",
-        "crypto": "加密貨幣",
-        "stocks": "股票",
-        "accounts": "帳戶",
-        "research": "研究",
-        "records": "紀錄",
-        "deployment": "部署",
-        "dashboard_title": "策略儀錶板",
-        "dashboard_subtitle": "目前掃盤推薦、資料健康度、帳戶狀態與市場新聞。回測放在研究分頁。",
-        "crypto_mode": "加密策略模式",
-        "equity_scan": "股票掃盤",
-        "tracked_equity": "追蹤資產",
-        "tracked_positions": "追蹤持倉",
-        "tw_picks": "台股掃盤推薦",
-        "us_picks": "美股掃盤推薦",
-        "market_news": "市場新聞",
-        "refresh_news": "更新市場新聞",
-        "news_crypto": "加密",
-        "news_tw": "台股",
-        "news_us": "美股",
-        "stocks_title": "台股 / 美股策略",
-        "stocks_subtitle": "依市場調整的策略掃盤、K 線圖、進出場、停損、TP 與 RR。",
-        "latest_scan": "最新策略掃盤",
-        "price_alerts": "價格提醒",
-        "check_alerts": "檢查價格提醒",
+        "workspace": "\u5de5\u4f5c\u5340",
+        "control_panel": "\u63a7\u5236\u9762\u677f",
+        "data_controls": "\u8cc7\u6599\u63a7\u5236",
+        "language": "\u8a9e\u8a00",
+        "dashboard": "\u5100\u8868\u677f",
+        "crypto": "\u52a0\u5bc6\u8ca8\u5e63",
+        "stocks": "\u80a1\u7968",
+        "live_desk": "\u5be6\u76e4\u7b56\u7565",
+        "accounts": "\u5e33\u6236",
+        "research": "\u7814\u7a76",
+        "records": "\u7d00\u9304",
+        "deployment": "\u90e8\u7f72",
+        "dashboard_title": "\u7b56\u7565\u5100\u8868\u677f",
+        "dashboard_subtitle": "\u76ee\u524d\u6383\u76e4\u63a8\u85a6\u3001\u8cc7\u6599\u5065\u5eb7\u5ea6\u3001\u5e33\u6236\u72c0\u614b\u8207\u5e02\u5834\u65b0\u805e\u3002\u56de\u6e2c\u96c6\u4e2d\u653e\u5728\u7814\u7a76\u9801\u3002",
+        "crypto_mode": "\u52a0\u5bc6\u7b56\u7565\u6a21\u5f0f",
+        "equity_scan": "\u80a1\u7968\u6383\u76e4",
+        "tracked_equity": "\u8ffd\u8e64\u8cc7\u7522",
+        "tracked_positions": "\u8ffd\u8e64\u6301\u5009",
+        "tw_picks": "\u53f0\u80a1\u6383\u76e4\u63a8\u85a6",
+        "us_picks": "\u7f8e\u80a1\u6383\u76e4\u63a8\u85a6",
+        "market_news": "\u5e02\u5834\u65b0\u805e",
+        "refresh_news": "\u66f4\u65b0\u5e02\u5834\u65b0\u805e",
+        "news_crypto": "\u52a0\u5bc6\u8ca8\u5e63",
+        "news_tw": "\u53f0\u80a1",
+        "news_us": "\u7f8e\u80a1",
+        "stocks_title": "\u53f0\u80a1 / \u7f8e\u80a1\u7b56\u7565",
+        "stocks_subtitle": "\u4f9d\u5e02\u5834\u898f\u5247\u8abf\u6574\u7684\u6383\u76e4\u3001\u5716\u8868\u3001\u9032\u5834\u3001\u505c\u640d\u3001\u6b62\u76c8\u8207 RR\u3002",
+        "latest_scan": "\u6700\u65b0\u7b56\u7565\u6383\u76e4",
+        "price_alerts": "\u50f9\u683c\u63d0\u9192",
+        "check_alerts": "\u6aa2\u67e5\u50f9\u683c\u63d0\u9192",
     },
     "en": {
         "workspace": "Workspace",
@@ -123,6 +126,7 @@ I18N = {
         "dashboard": "Dashboard",
         "crypto": "Crypto",
         "stocks": "Stocks",
+        "live_desk": "Live Desk",
         "accounts": "Accounts",
         "research": "Research",
         "records": "Records",
@@ -738,10 +742,125 @@ def local_ip() -> str:
         return "127.0.0.1"
 
 
+def append_live_plan_orders(plan: pd.DataFrame) -> int:
+    actionable = plan[plan["side"].astype(str).isin(["BUY", "SELL"])] if not plan.empty else pd.DataFrame()
+    appended = 0
+    for row in actionable.to_dict("records"):
+        symbol = str(row.get("symbol", "")).upper()
+        if not symbol or symbol == "CASH":
+            continue
+        quantity = safe_float(row.get("order_quantity"))
+        if quantity <= 0:
+            continue
+        rr1 = row.get("risk_reward_1")
+        rr2 = row.get("risk_reward_2")
+        rr_note = (
+            f" RR1={float(rr1):.2f} RR2={float(rr2):.2f}"
+            if not pd.isna(rr1) and not pd.isna(rr2)
+            else ""
+        )
+        orders = append_order(
+            ORDERS_FILE,
+            OrderTracker(
+                account_id=str(row.get("account_id", "")),
+                broker=str(row.get("broker", "")),
+                market=str(row.get("market", "")),
+                symbol=symbol,
+                company=str(row.get("company", symbol)),
+                side=str(row.get("side", "")),
+                status=str(row.get("status", "PLANNED")),
+                quantity=quantity,
+                entry_price=safe_float(row.get("entry_price"), safe_float(row.get("reference_price"))),
+                stop_loss=safe_float(row.get("stop_loss")),
+                take_profit_1=safe_float(row.get("take_profit_1")),
+                take_profit_2=safe_float(row.get("take_profit_2")),
+                strategy="equity_live_strategy_scan",
+                notes=f"{row.get('notes', '')}{rr_note}",
+            ),
+        )
+        appended = len(orders)
+    return appended
+
+
+def render_live_equity_desk(
+    market: str,
+    title: str,
+    broker_default: str,
+    account_default: str,
+    currency: str,
+    capital_default: float,
+    min_trade_default: float,
+    recommendations: pd.DataFrame,
+    positions: pd.DataFrame,
+) -> None:
+    st.subheader(title)
+    st.caption(
+        "Uses latest strategy-selected scan rows only. Orders are generated as live intents; broker auto-submit is disabled."
+    )
+    col_a, col_b, col_c = st.columns(3)
+    broker = col_a.text_input(f"{market.upper()} broker", value=broker_default)
+    account_id = col_b.text_input(f"{market.upper()} strategy account", value=account_default)
+    capital = col_c.number_input(
+        f"{market.upper()} controlled capital ({currency})",
+        min_value=0.0,
+        value=capital_default,
+        step=100.0 if market == "us" else 10_000.0,
+    )
+    min_trade_value = st.number_input(
+        f"{market.upper()} minimum order value ({currency})",
+        min_value=0.0,
+        value=min_trade_default,
+        step=50.0 if market == "us" else 1_000.0,
+    )
+    plan = build_equity_live_order_plan(
+        recommendations=recommendations,
+        positions=positions,
+        market=market,
+        account_id=account_id,
+        broker=broker,
+        currency=currency,
+        capital=capital,
+        min_trade_value=min_trade_value,
+    )
+    plan_path = EQUITY_LIVE_DIR / f"{market}_live_order_plan.csv"
+    save_live_order_plan(plan, plan_path)
+    buys = plan[plan["side"].astype(str) == "BUY"] if not plan.empty else pd.DataFrame()
+    sells = plan[plan["side"].astype(str) == "SELL"] if not plan.empty else pd.DataFrame()
+    col_1, col_2, col_3 = st.columns(3)
+    col_1.metric("Strategy capital", f"{currency} {money(capital)}")
+    col_2.metric("Buy intents", len(buys))
+    col_3.metric("Sell intents", len(sells))
+    if plan.empty:
+        st.info("No live order plan generated.")
+        return
+    display_columns = [
+        "symbol",
+        "company",
+        "side",
+        "status",
+        "target_weight",
+        "target_value",
+        "delta_value",
+        "entry_price",
+        "stop_loss",
+        "take_profit_1",
+        "take_profit_2",
+        "risk_reward_1",
+        "risk_reward_2",
+        "order_quantity",
+    ]
+    st.dataframe(plan[display_columns], hide_index=True, width="stretch")
+    st.caption(f"Saved plan: `{plan_path}`")
+    if st.button(f"Append {market.upper()} live intents to order tracker"):
+        total_rows = append_live_plan_orders(plan)
+        st.success(f"Order tracker updated. Total rows: {total_rows}.")
+
+
 NAV_OPTIONS = [
     "Dashboard",
     "Crypto",
     "Stocks",
+    "Live Desk",
     "Accounts",
     "Research",
     "Records",
@@ -749,13 +868,14 @@ NAV_OPTIONS = [
 ]
 
 with st.sidebar:
-    language_choice = st.selectbox("Language / 語言", ["繁體中文", "English"], index=0)
-    st.session_state["lang"] = "zh" if language_choice == "繁體中文" else "en"
+    language_choice = st.selectbox("Language / \u8a9e\u8a00", ["\u7e41\u9ad4\u4e2d\u6587", "English"], index=0)
+    st.session_state["lang"] = "zh" if language_choice != "English" else "en"
 
 NAV_LABELS = {
     "Dashboard": tr("dashboard"),
     "Crypto": tr("crypto"),
     "Stocks": tr("stocks"),
+    "Live Desk": tr("live_desk"),
     "Accounts": tr("accounts"),
     "Research": tr("research"),
     "Records": tr("records"),
@@ -1249,6 +1369,75 @@ elif page == "Stocks":
         if state:
             with st.expander("Alert state"):
                 st.json(state, expanded=False)
+
+elif page == "Live Desk":
+    hero(
+        "Strategy Live Desk",
+        "Strategy-controlled sleeves for live equity execution planning. U.S. sleeve defaults to 10,000 USD; Taiwan sleeve defaults to 300,000 TWD.",
+    )
+    st.warning(
+        "This page creates live order intents from the current strategy. It does not submit orders to Firstrade or Cathay Securities."
+    )
+    latest_recommendations = read_csv_or_empty(EQUITY_SCAN_DIR / "latest_recommendations.csv")
+    tracked_positions = load_table(POSITIONS_FILE, POSITION_COLUMNS)
+    if latest_recommendations.empty:
+        st.info("No latest strategy recommendations found. Run the equity scan first.")
+    us_live_tab, tw_live_tab, strategy_alert_tab = st.tabs(
+        ["U.S. $10,000 Sleeve", "Taiwan NT$300,000 Sleeve", "Strategy Price Alerts"]
+    )
+    with us_live_tab:
+        render_live_equity_desk(
+            market="us",
+            title="U.S. Strategy Sleeve",
+            broker_default="Firstrade",
+            account_default="strategy-us-10000",
+            currency="USD",
+            capital_default=10_000.0,
+            min_trade_default=100.0,
+            recommendations=latest_recommendations,
+            positions=tracked_positions,
+        )
+    with tw_live_tab:
+        render_live_equity_desk(
+            market="tw",
+            title="Taiwan Strategy Sleeve",
+            broker_default="Cathay Securities",
+            account_default="strategy-tw-300000",
+            currency="TWD",
+            capital_default=300_000.0,
+            min_trade_default=5_000.0,
+            recommendations=latest_recommendations,
+            positions=tracked_positions,
+        )
+    with strategy_alert_tab:
+        st.subheader("Strategy-selected price alerts")
+        st.caption("Alerts use the latest selected strategy rows and their exact entry, stop, TP1, and TP2 values.")
+        alert_columns = [
+            "market",
+            "symbol",
+            "company",
+            "action",
+            "entry_price",
+            "stop_loss",
+            "take_profit_1",
+            "take_profit_2",
+            "risk_reward_1",
+            "risk_reward_2",
+        ]
+        if latest_recommendations.empty:
+            st.info("No strategy alert watchlist yet.")
+        else:
+            st.dataframe(latest_recommendations[[c for c in alert_columns if c in latest_recommendations]], hide_index=True, width="stretch")
+        if st.button("Check strategy price alerts", type="primary"):
+            try:
+                events = check_equity_price_alerts(notify=True, record_state=True)
+                if events:
+                    st.success(f"{len(events)} Discord alert(s) sent.")
+                    st.dataframe(pd.DataFrame([event.to_dict() for event in events]), hide_index=True, width="stretch")
+                else:
+                    st.info("No strategy price alert triggered.")
+            except Exception as exc:
+                st.error(f"Strategy price alert check failed: {exc}")
 
 elif page == "Accounts":
     hero(

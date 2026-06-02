@@ -7,6 +7,7 @@ This project ships as a Streamlit web app. It is cross-platform because it runs 
 - Dashboard: market snapshot, news, crypto live-readiness, and tracked account/position status.
 - Crypto: signal center, forward paper tracking, allocation donut chart, candlestick chart levels, and notification controls.
 - Stocks: Taiwan and U.S. strategy ranking charts, company names, selectable candlestick charts, entry/exit/SL/TP levels, and benchmark comparison.
+- Live Desk: strategy-controlled U.S. 10,000 USD and Taiwan 300,000 TWD sleeves that generate live order intents from the latest equity scan.
 - Accounts: Pionex crypto account tracking, Cathay Securities Taiwan stock tracking, Firstrade U.S. stock tracking, position records, and order tracking.
 - Research: current optimization stance and generated research files.
 - Records: generated CSV/JSON outputs for audit and review.
@@ -18,11 +19,15 @@ The app currently records account state and order plans. It does not place live 
 
 Cathay Securities and Firstrade execution remains manual by design. The app can now sync exported holding CSV files, record account equity, positions, and planned orders, but the actual stock orders remain user-executed.
 
+The Live Desk turns the latest strategy-selected rows into broker-ready order intents for a U.S. sleeve and a Taiwan sleeve. It records entry, stop, TP1, TP2, RR, target value, and order quantity, but it still does not submit orders to Firstrade or Cathay Securities.
+
 ## Strategy Signal Boundary
 
 The strategy supports cash/no-trade states. `HOLD_CASH` and `HOLD_CASH_OR_EXIT` are valid outputs, not errors.
 
 Entry prices are strategy trigger prices. The app does not use the latest close as a recommended entry. For selected assets, the entry waits for a breakout trigger derived from recent highs, trend level, and ATR. Stop loss and TP levels are then calculated from that trigger price.
+
+The detailed equity strategy review is in `docs/equity_strategy_review.md`. It separates the backtested selection/rebalance model from the execution overlay used for entry, stop loss, TP, and RR alerts.
 
 ## Data Reliability
 

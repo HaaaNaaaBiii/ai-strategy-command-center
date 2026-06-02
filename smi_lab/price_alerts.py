@@ -8,6 +8,7 @@ from pathlib import Path
 import pandas as pd
 
 from .equity_data import fetch_yahoo_chart
+from .equity_live import strategy_recommendations_for_market
 from .notifier import resolve_discord_mention, send_discord
 
 
@@ -111,6 +112,20 @@ def check_equity_price_alerts(
     record_state: bool = True,
 ) -> list[AlertEvent]:
     recommendations = pd.read_csv(recommendations_path)
+    if recommendations.empty:
+        return []
+    if "market" in recommendations:
+        recommendations = pd.concat(
+            [
+                strategy_recommendations_for_market(recommendations, "tw"),
+                strategy_recommendations_for_market(recommendations, "us"),
+            ],
+            ignore_index=True,
+        )
+    else:
+        selected = recommendations["selected"] if "selected" in recommendations else True
+        if not isinstance(selected, bool):
+            recommendations = recommendations[selected.astype(str).str.lower().isin({"true", "1", "yes", "y"})]
     if recommendations.empty:
         return []
     state = _load_state(state_path)

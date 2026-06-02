@@ -35,6 +35,7 @@ from smi_lab.accounts import (
     upsert_account,
 )
 from smi_lab.broker_import import normalize_broker_positions, sync_broker_exports
+from smi_lab.equity_live import build_equity_live_order_plan
 from smi_lab.equity_signals import add_company_names, build_equity_trade_plan
 from smi_lab.equity_scanner import build_scan_recommendations
 from smi_lab.equity_strategy import (
@@ -965,6 +966,86 @@ class StrategyTests(unittest.TestCase):
         self.assertEqual(len(events), 1)
         self.assertFalse(state.exists())
         self.assertFalse(send_discord.called)
+
+    @patch("smi_lab.price_alerts.send_discord")
+    @patch("smi_lab.price_alerts._latest_price", return_value=(105.0, 106.0, 104.0))
+    def test_price_alerts_ignore_unselected_strategy_rows(self, _: object, send_discord: object) -> None:
+        with TemporaryDirectory() as directory:
+            recommendations = Path(directory) / "recommendations.csv"
+            state = Path(directory) / "state.json"
+            pd.DataFrame(
+                [
+                    {
+                        "market": "us",
+                        "symbol": "AAPL",
+                        "company": "Apple",
+                        "selected": False,
+                        "action": "HOLD_CASH",
+                        "entry_price": 105.0,
+                        "stop_loss": 95.0,
+                        "take_profit_1": 115.0,
+                        "take_profit_2": 125.0,
+                    }
+                ]
+            ).to_csv(recommendations, index=False)
+
+            events = check_equity_price_alerts(recommendations, state, notify=True)
+
+        self.assertEqual(events, [])
+        self.assertFalse(send_discord.called)
+
+    def test_equity_live_plan_uses_strategy_prices_and_equal_weights(self) -> None:
+        recommendations = pd.DataFrame(
+            [
+                {
+                    "market": "us",
+                    "symbol": "AAPL",
+                    "company": "Apple",
+                    "selected": True,
+                    "action": "WAIT_FOR_BREAKOUT",
+                    "entry_price": 110.0,
+                    "stop_loss": 100.0,
+                    "take_profit_1": 120.0,
+                    "take_profit_2": 130.0,
+                    "risk_reward_1": 1.0,
+                    "risk_reward_2": 2.0,
+                    "rank": 1,
+                },
+                {
+                    "market": "us",
+                    "symbol": "MSFT",
+                    "company": "Microsoft",
+                    "selected": True,
+                    "action": "WAIT_FOR_BREAKOUT",
+                    "entry_price": 220.0,
+                    "stop_loss": 200.0,
+                    "take_profit_1": 240.0,
+                    "take_profit_2": 260.0,
+                    "risk_reward_1": 1.0,
+                    "risk_reward_2": 2.0,
+                    "rank": 2,
+                },
+            ]
+        )
+
+        plan = build_equity_live_order_plan(
+            recommendations=recommendations,
+            positions=pd.DataFrame(),
+            market="us",
+            account_id="strategy-us-10000",
+            broker="Firstrade",
+            currency="USD",
+            capital=10_000.0,
+            min_trade_value=100.0,
+        )
+
+        self.assertEqual(plan["symbol"].tolist(), ["AAPL", "MSFT"])
+        self.assertTrue((plan["side"] == "BUY").all())
+        self.assertAlmostEqual(float(plan.iloc[0]["target_weight"]), 0.5)
+        self.assertAlmostEqual(float(plan.iloc[0]["target_value"]), 5000.0)
+        self.assertAlmostEqual(float(plan.iloc[0]["reference_price"]), 110.0)
+        self.assertAlmostEqual(float(plan.iloc[0]["order_quantity"]), 5000.0 / 110.0)
+        self.assertAlmostEqual(float(plan.iloc[0]["risk_reward_2"]), 2.0)
 
     def test_alert_message_includes_rr_when_available(self) -> None:
         message = format_alert_message(
