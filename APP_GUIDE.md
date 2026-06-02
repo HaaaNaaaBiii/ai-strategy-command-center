@@ -2,6 +2,12 @@
 
 This project ships as a Streamlit web app. It is cross-platform because it runs in a browser on Windows, macOS, Linux, iOS, and Android.
 
+Project entrypoint:
+
+- `PROJECT.md`: consolidated project brief, current strategy state, live boundaries, and next steps.
+- `docs/scan_operations.md`: crypto/Taiwan/U.S. scan rules, schedules, commands, outputs, and notification rules.
+- `docs/equity_strategy_review.md`: equity strategy review, backtest status, and live execution boundary.
+
 ## What This App Provides
 
 - Dashboard: market snapshot, news, crypto live-readiness, and tracked account/position status.
