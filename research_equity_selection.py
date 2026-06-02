@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 from pathlib import Path
+from dataclasses import replace
 
 import pandas as pd
 
@@ -24,11 +25,28 @@ def parser() -> argparse.ArgumentParser:
     command.add_argument("--market", choices=["tw", "us", "both"], default="both")
     command.add_argument("--interval", default="1d", choices=["1d", "1wk", "1h"])
     command.add_argument("--range", dest="range_", default="2y")
+    command.add_argument("--weighting", choices=["equal", "score", "capped_score", "all"], default="equal")
     command.add_argument("--refresh", action="store_true")
     return command
 
 
-def run_market(market: str, interval: str, range_: str, refresh: bool) -> None:
+def weighting_configs(config, weighting: str):
+    variants = {
+        "equal": config,
+        "score": replace(config, weighting_method="score"),
+        "capped_score": replace(
+            config,
+            weighting_method="capped_score",
+            min_position_weight=0.20,
+            max_position_weight=0.40,
+        ),
+    }
+    if weighting == "all":
+        return variants
+    return {weighting: variants[weighting]}
+
+
+def run_market(market: str, interval: str, range_: str, refresh: bool, weighting: str) -> None:
     config = default_equity_config(market)
     symbols = list(dict.fromkeys([*equity_scan_symbols(market), config.market_symbol]))
     universe = load_equity_universe(
@@ -39,7 +57,10 @@ def run_market(market: str, interval: str, range_: str, refresh: bool) -> None:
         refresh=refresh,
     )
     ranking = rank_equities(universe, config)
-    result = backtest_equity_selection(universe, config)
+    results = {
+        label: backtest_equity_selection(universe, variant_config)
+        for label, variant_config in weighting_configs(config, weighting).items()
+    }
     benchmark = benchmark_buy_and_hold(
         universe[config.market_symbol],
         fee_bps=config.fee_bps,
@@ -47,10 +68,15 @@ def run_market(market: str, interval: str, range_: str, refresh: bool) -> None:
     )
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
     ranking.to_csv(OUTPUT_DIR / f"{market}_ranking.csv", index=False)
-    result.rebalances.to_csv(OUTPUT_DIR / f"{market}_rebalances.csv", index=False)
+    for label, result in results.items():
+        suffix = "" if label == "equal" else f"_{label}"
+        result.rebalances.to_csv(OUTPUT_DIR / f"{market}{suffix}_rebalances.csv", index=False)
     pd.DataFrame(
         [
-            {"strategy": "equity_selection", **result.metrics},
+            *[
+                {"strategy": f"equity_selection_{label}", **result.metrics}
+                for label, result in results.items()
+            ],
             {"strategy": config.market_symbol, **benchmark.metrics},
         ]
     ).to_csv(OUTPUT_DIR / f"{market}_metrics.csv", index=False)
@@ -75,8 +101,14 @@ def run_market(market: str, interval: str, range_: str, refresh: bool) -> None:
                 }[market],
                 "config": config.to_dict(),
                 "benchmark_return_pct": benchmark.metrics["return_pct"],
-                "strategy_return_pct": result.metrics["return_pct"],
-                "strategy_excess_pct": result.metrics["return_pct"] - benchmark.metrics["return_pct"],
+                "strategy_variants": {
+                    label: {
+                        "config": weighting_configs(config, weighting)[label].to_dict(),
+                        "metrics": result.metrics,
+                        "excess_pct": result.metrics["return_pct"] - benchmark.metrics["return_pct"],
+                    }
+                    for label, result in results.items()
+                },
                 "deployment_status": "research_only",
                 "deployment_blocker": "Needs larger universe, survivorship-bias controls, corporate actions/dividend handling, and forward paper tracking before notifications.",
             },
@@ -85,7 +117,10 @@ def run_market(market: str, interval: str, range_: str, refresh: bool) -> None:
         encoding="utf-8",
     )
     pd.concat(
-        {"strategy": result.equity, config.market_symbol: benchmark.equity},
+        {
+            **{f"equity_selection_{label}": result.equity for label, result in results.items()},
+            config.market_symbol: benchmark.equity,
+        },
         axis=1,
         sort=False,
     ).to_csv(OUTPUT_DIR / f"{market}_equity.csv")
@@ -98,7 +133,7 @@ def main() -> None:
     args = parser().parse_args()
     markets = ("tw", "us") if args.market == "both" else (args.market,)
     for market in markets:
-        run_market(market, args.interval, args.range_, args.refresh)
+        run_market(market, args.interval, args.range_, args.refresh, args.weighting)
 
 
 if __name__ == "__main__":

@@ -43,6 +43,7 @@ from smi_lab.equity_strategy import (
     backtest_equity_selection,
     benchmark_buy_and_hold,
     rank_equities,
+    target_weights_from_ranking,
 )
 from smi_lab.equity_universe import equity_scan_symbols
 from smi_lab.market_info import cached_crypto_snapshots, fetch_equity_symbol_news
@@ -696,6 +697,46 @@ class StrategyTests(unittest.TestCase):
         self.assertEqual(ranking.iloc[0]["symbol"], "STRONG")
         self.assertGreater(result.metrics["return_pct"], benchmark.metrics["return_pct"])
         self.assertFalse(result.rebalances.empty)
+
+    def test_score_weighting_allocates_more_to_higher_score(self) -> None:
+        ranking = pd.DataFrame(
+            [
+                {"symbol": "LEADER", "eligible": True, "score": 90.0},
+                {"symbol": "RUNNER", "eligible": True, "score": 45.0},
+                {"symbol": "LAGGARD", "eligible": True, "score": 15.0},
+            ]
+        )
+        config = EquitySelectionConfig(
+            market_symbol="SPY",
+            top_n=3,
+            weighting_method="score",
+        )
+        weights = target_weights_from_ranking(ranking, config)
+
+        self.assertAlmostEqual(sum(weights.values()), 1.0)
+        self.assertGreater(weights["LEADER"], weights["RUNNER"])
+        self.assertGreater(weights["RUNNER"], weights["LAGGARD"])
+
+    def test_capped_score_weighting_limits_concentration(self) -> None:
+        ranking = pd.DataFrame(
+            [
+                {"symbol": "LEADER", "eligible": True, "score": 900.0},
+                {"symbol": "RUNNER", "eligible": True, "score": 50.0},
+                {"symbol": "LAGGARD", "eligible": True, "score": 10.0},
+            ]
+        )
+        config = EquitySelectionConfig(
+            market_symbol="SPY",
+            top_n=3,
+            weighting_method="capped_score",
+            min_position_weight=0.20,
+            max_position_weight=0.40,
+        )
+        weights = target_weights_from_ranking(ranking, config)
+
+        self.assertAlmostEqual(sum(weights.values()), 1.0)
+        self.assertLessEqual(weights["LEADER"], 0.40)
+        self.assertGreaterEqual(weights["LAGGARD"], 0.20)
 
     def test_equity_trade_plan_adds_company_without_unbacktested_levels(self) -> None:
         index = pd.date_range("2025-01-01", periods=260, freq="1D", tz="UTC")

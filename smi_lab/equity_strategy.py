@@ -22,6 +22,9 @@ class EquitySelectionConfig:
     gross_exposure: float = 1.0
     fee_bps: float = 10.0
     slippage_bps: float = 5.0
+    weighting_method: str = "equal"
+    min_position_weight: float = 0.0
+    max_position_weight: float = 1.0
 
     def validate(self) -> "EquitySelectionConfig":
         if self.top_n < 1 or self.rebalance_bars < 1:
@@ -32,6 +35,12 @@ class EquitySelectionConfig:
             raise ValueError("gross_exposure must be in (0, 1].")
         if min(self.fee_bps, self.slippage_bps) < 0:
             raise ValueError("trading costs must not be negative.")
+        if self.weighting_method not in {"equal", "score", "capped_score"}:
+            raise ValueError("weighting_method must be equal, score, or capped_score.")
+        if self.min_position_weight < 0 or self.max_position_weight <= 0:
+            raise ValueError("position weight caps must be positive.")
+        if self.min_position_weight > self.max_position_weight:
+            raise ValueError("min_position_weight must not exceed max_position_weight.")
         return self
 
     def to_dict(self) -> dict[str, object]:
@@ -151,6 +160,96 @@ def rank_equities(
     return pd.DataFrame(rows).sort_values(["eligible", "score"], ascending=[False, False])
 
 
+def _score_weights(selected: pd.DataFrame, gross_exposure: float) -> np.ndarray:
+    scores = pd.to_numeric(selected.get("score", 0.0), errors="coerce").fillna(0.0).clip(lower=0.0)
+    if scores.sum() <= 0:
+        return np.full(len(selected), gross_exposure / len(selected), dtype=float)
+    return scores.to_numpy(dtype=float) / float(scores.sum()) * gross_exposure
+
+
+def _apply_weight_caps(
+    raw_weights: np.ndarray,
+    gross_exposure: float,
+    min_weight: float,
+    max_weight: float,
+) -> np.ndarray:
+    if len(raw_weights) == 0:
+        return raw_weights
+    min_weight = min(min_weight, gross_exposure / len(raw_weights))
+    max_weight = max(max_weight, gross_exposure / len(raw_weights))
+    remaining = np.ones(len(raw_weights), dtype=bool)
+    final = np.zeros(len(raw_weights), dtype=float)
+    remaining_total = gross_exposure
+    base = np.maximum(raw_weights, 0.0)
+    for _ in range(len(raw_weights) + 1):
+        if not remaining.any():
+            break
+        active = np.where(remaining)[0]
+        active_base = base[active]
+        if active_base.sum() <= 0:
+            scaled = np.full(len(active), remaining_total / len(active), dtype=float)
+        else:
+            scaled = active_base / float(active_base.sum()) * remaining_total
+        low = scaled < min_weight
+        high = scaled > max_weight
+        if not low.any() and not high.any():
+            final[active] = scaled
+            remaining[active] = False
+            break
+        constrained = low | high
+        for local_index, constrained_now in enumerate(constrained):
+            if not constrained_now:
+                continue
+            index = active[local_index]
+            value = min_weight if low[local_index] else max_weight
+            final[index] = value
+            remaining[index] = False
+            remaining_total -= value
+    if remaining.any():
+        active = np.where(remaining)[0]
+        final[active] = remaining_total / len(active)
+    leftover = gross_exposure - float(final.sum())
+    for _ in range(len(final) + 1):
+        if abs(leftover) < 1e-10:
+            break
+        if leftover > 0:
+            candidates = np.where(final < max_weight - 1e-10)[0]
+            if len(candidates) == 0:
+                break
+            room = max_weight - final[candidates]
+            add = np.minimum(room, leftover / len(candidates))
+            final[candidates] += add
+            leftover = gross_exposure - float(final.sum())
+        else:
+            candidates = np.where(final > min_weight + 1e-10)[0]
+            if len(candidates) == 0:
+                break
+            room = final[candidates] - min_weight
+            remove = np.minimum(room, abs(leftover) / len(candidates))
+            final[candidates] -= remove
+            leftover = gross_exposure - float(final.sum())
+    total = final.sum()
+    return final / total * gross_exposure if total > 0 else final
+
+
+def target_weights_from_ranking(ranking: pd.DataFrame, config: EquitySelectionConfig) -> dict[str, float]:
+    selected = ranking[ranking["eligible"]].head(config.top_n)
+    if selected.empty:
+        return {}
+    if config.weighting_method == "equal":
+        weights = np.full(len(selected), config.gross_exposure / len(selected), dtype=float)
+    else:
+        weights = _score_weights(selected, config.gross_exposure)
+        if config.weighting_method == "capped_score":
+            weights = _apply_weight_caps(
+                weights,
+                config.gross_exposure,
+                config.min_position_weight,
+                config.max_position_weight,
+            )
+    return dict(zip(selected["symbol"].astype(str), weights))
+
+
 def backtest_equity_selection(
     universe: dict[str, pd.DataFrame],
     config: EquitySelectionConfig,
@@ -170,12 +269,11 @@ def backtest_equity_selection(
     for i in range(start, len(index)):
         if (i - start) % config.rebalance_bars == 0:
             ranking = rank_equities(universe, config, as_of=index[i - 1])
-            selected_symbols = ranking[ranking["eligible"]].head(config.top_n)["symbol"].tolist()
+            target_weights = target_weights_from_ranking(ranking, config)
+            selected_symbols = list(target_weights)
             weights = np.zeros(len(symbols), dtype=float)
-            if selected_symbols:
-                per_symbol = config.gross_exposure / len(selected_symbols)
-                for symbol in selected_symbols:
-                    weights[symbols.index(symbol)] = per_symbol
+            for symbol, weight in target_weights.items():
+                weights[symbols.index(symbol)] = weight
             if np.any(weights != prior_weights):
                 open_equity = cash + float(np.sum(quantities * opens.iloc[i].to_numpy(dtype=float)))
                 desired_values = open_equity * weights
@@ -194,7 +292,12 @@ def backtest_equity_selection(
                     {
                         "timestamp": index[i],
                         "selected_symbols": ",".join(selected_symbols) or "CASH",
+                        "target_weights": ",".join(
+                            f"{symbol}:{target_weights[symbol]:.6f}" for symbol in selected_symbols
+                        )
+                        or "CASH:0.000000",
                         "turnover": turnover,
+                        "turnover_pct": turnover / open_equity * 100.0 if open_equity else 0.0,
                         "cost": cost,
                         "equity_before_cost": open_equity,
                     }
@@ -202,8 +305,15 @@ def backtest_equity_selection(
         curve[index[i]] = cash + float(np.sum(quantities * closes.iloc[i].to_numpy(dtype=float)))
     equity = pd.Series(curve, name="equity_selection", dtype=float).sort_index()
     metrics = _metrics(equity, pd.DataFrame(), initial_equity)
-    metrics.update({"rebalances": float(len(events))})
-    return EquityStrategyResult(equity, pd.DataFrame(events), metrics)
+    event_frame = pd.DataFrame(events)
+    metrics.update(
+        {
+            "rebalances": float(len(events)),
+            "avg_turnover_pct": float(event_frame["turnover_pct"].mean()) if not event_frame.empty else 0.0,
+            "total_cost": float(event_frame["cost"].sum()) if not event_frame.empty else 0.0,
+        }
+    )
+    return EquityStrategyResult(equity, event_frame, metrics)
 
 
 def benchmark_buy_and_hold(
