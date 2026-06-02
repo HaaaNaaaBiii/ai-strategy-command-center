@@ -87,6 +87,11 @@ $env:DISCORD_WEBHOOK_URL = "https://discord.com/api/webhooks/..."
 $env:DISCORD_MENTION = "<@your_user_id>"
 ```
 
+The notifier also reads local Git-ignored fallbacks:
+
+- `data/secrets/discord_webhook_url.txt`
+- `data/secrets/discord_mention.txt`
+
 The `Equity price alert check` automation runs hourly. If `DISCORD_WEBHOOK_URL` is not configured, it skips sending alerts and prints a configuration message instead of consuming alert state.
 
 ## Strategy Optimization Status

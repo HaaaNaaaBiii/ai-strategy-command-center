@@ -2,10 +2,16 @@ from __future__ import annotations
 
 import json
 import os
+from pathlib import Path
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
 from .strategy import Signal
+
+
+SECRET_DIR = Path("data/secrets")
+DISCORD_WEBHOOK_SECRET_FILE = SECRET_DIR / "discord_webhook_url.txt"
+DISCORD_MENTION_SECRET_FILE = SECRET_DIR / "discord_mention.txt"
 
 
 def format_signal(signal: Signal) -> str:
@@ -37,8 +43,26 @@ def _post_json(url: str, payload: dict[str, object]) -> None:
             raise RuntimeError(f"Notification endpoint returned HTTP {response.status}.")
 
 
+def _read_secret_file(path: Path) -> str:
+    if not path.exists():
+        return ""
+    return path.read_text(encoding="utf-8").strip()
+
+
+def resolve_discord_webhook_url() -> str:
+    return os.environ.get("DISCORD_WEBHOOK_URL", "").strip() or _read_secret_file(
+        DISCORD_WEBHOOK_SECRET_FILE
+    )
+
+
+def resolve_discord_mention() -> str:
+    return os.environ.get("DISCORD_MENTION", "").strip() or _read_secret_file(
+        DISCORD_MENTION_SECRET_FILE
+    )
+
+
 def send_discord(message: str, webhook_url: str | None = None) -> None:
-    url = webhook_url or os.environ.get("DISCORD_WEBHOOK_URL")
+    url = webhook_url or resolve_discord_webhook_url()
     if not url:
         raise ValueError("DISCORD_WEBHOOK_URL is not configured.")
     _post_json(url, {"content": message})

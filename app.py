@@ -46,7 +46,12 @@ from smi_lab.market_info import (
     fetch_market_news,
 )
 from smi_lab.broker_import import DEFAULT_IMPORT_DIR, sync_broker_exports
-from smi_lab.notifier import send_discord, send_telegram
+from smi_lab.notifier import (
+    resolve_discord_mention,
+    resolve_discord_webhook_url,
+    send_discord,
+    send_telegram,
+)
 from smi_lab.paper import (
     aggregate_snapshot,
     allocation_snapshot,
@@ -1222,8 +1227,8 @@ elif page == "Stocks":
     with alerts_tab:
         st.subheader(tr("price_alerts"))
         st.caption("Uses latest scan recommendations. Configure DISCORD_WEBHOOK_URL and DISCORD_MENTION for scheduled alerts.")
-        webhook = st.text_input("Discord webhook URL", value=os.getenv("DISCORD_WEBHOOK_URL", ""), type="password")
-        mention = st.text_input("Discord mention/tag", value=os.getenv("DISCORD_MENTION", ""), placeholder="<@USER_ID>")
+        webhook = st.text_input("Discord webhook URL", value=resolve_discord_webhook_url(), type="password")
+        mention = st.text_input("Discord mention/tag", value=resolve_discord_mention(), placeholder="<@USER_ID>")
         dry_run = st.checkbox("Dry run", value=True)
         if st.button(tr("check_alerts"), type="primary"):
             try:

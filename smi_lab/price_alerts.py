@@ -3,13 +3,12 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime, timezone
 import json
-import os
 from pathlib import Path
 
 import pandas as pd
 
 from .equity_data import fetch_yahoo_chart
-from .notifier import send_discord
+from .notifier import resolve_discord_mention, send_discord
 
 
 LEVEL_COLUMNS = {
@@ -119,7 +118,7 @@ def check_equity_price_alerts(
     if not record_state:
         triggered = dict(triggered)
     events: list[AlertEvent] = []
-    mention = mention if mention is not None else os.environ.get("DISCORD_MENTION", "")
+    mention = mention if mention is not None else resolve_discord_mention()
     for row in recommendations.to_dict("records"):
         symbol = str(row.get("symbol", "")).upper()
         if not symbol:
