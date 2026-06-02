@@ -61,10 +61,33 @@ The stock page now treats the earlier small Taiwan/U.S. lists as seed watchlists
 Run manually:
 
 ```powershell
-.\.venv\Scripts\python.exe scan_equity_signals.py --market both --interval 1d --range 2y --top 5 --refresh
+.\.venv\Scripts\python.exe scan_equity_signals.py --market both --interval 1d --range 2y --refresh
 ```
 
-The Codex app also has an active hourly automation named `Hourly equity strategy scan` that runs the same scan and updates the recommendation files.
+Active Codex automations:
+
+- `Taiwan daily equity scan`: every weekday at 09:00 Taiwan time.
+- `U.S. daily equity scan`: every weekday at 21:00 Taiwan time.
+
+The latest equity optimization selected Top 3 sleeves for both markets. Taiwan uses 20/126-day momentum with 20-day rebalance and 0050.TW as the gate. U.S. uses 63/126-day momentum with 40-day rebalance and SPY as the gate. The latest two-year broad-universe backtests were:
+
+- Taiwan strategy: `+492.37%` versus 0050.TW `+148.55%`, max drawdown `-19.55%`.
+- U.S. strategy: `+207.82%` versus SPY `+43.27%`, max drawdown `-18.41%`.
+
+Stock trade plans include RR to TP1 and TP2. Price alerts can be checked manually:
+
+```powershell
+.\.venv\Scripts\python.exe check_price_alerts.py
+```
+
+Discord alerts require:
+
+```powershell
+$env:DISCORD_WEBHOOK_URL = "https://discord.com/api/webhooks/..."
+$env:DISCORD_MENTION = "<@your_user_id>"
+```
+
+The `Equity price alert check` automation is created but paused until Discord is configured.
 
 ## Strategy Optimization Status
 

@@ -142,6 +142,8 @@ class EquityTradePlan:
     stop_loss: float | None
     take_profit_1: float | None
     take_profit_2: float | None
+    risk_reward_1: float | None
+    risk_reward_2: float | None
     strategy_exit: float | None
     atr: float
     trend_level: float
@@ -208,10 +210,13 @@ def build_equity_trade_plan(
     rank = ranked_symbols.index(symbol) + 1 if symbol in ranked_symbols else None
     if selected:
         entry = max(breakout + 0.10 * current_atr, trend + 0.10 * current_atr)
-        stop = min(entry - 2.0 * current_atr, trend * 0.98)
+        stop = max(entry - 2.0 * current_atr, trend * 0.98)
         take_profit_1 = entry + 2.0 * current_atr
         take_profit_2 = entry + 4.0 * current_atr
         strategy_exit = max(entry - 2.5 * current_atr, trend)
+        risk = max(entry - stop, 0.0)
+        risk_reward_1 = (take_profit_1 - entry) / risk if risk else None
+        risk_reward_2 = (take_profit_2 - entry) / risk if risk else None
         action = "WAIT_FOR_BREAKOUT"
         reason = (
             "Eligible and inside the current top-N sleeve. Entry waits for the "
@@ -222,6 +227,8 @@ def build_equity_trade_plan(
         stop = None
         take_profit_1 = None
         take_profit_2 = None
+        risk_reward_1 = None
+        risk_reward_2 = None
         strategy_exit = trend
         action = "HOLD_CASH"
         reason = "Eligible but not inside the current top-N sleeve; keep cash unless it rotates in."
@@ -230,6 +237,8 @@ def build_equity_trade_plan(
         stop = None
         take_profit_1 = None
         take_profit_2 = None
+        risk_reward_1 = None
+        risk_reward_2 = None
         strategy_exit = trend
         action = "HOLD_CASH_OR_EXIT"
         reason = "Fails at least one market, trend, momentum, or volatility filter."
@@ -245,6 +254,8 @@ def build_equity_trade_plan(
         stop_loss=max(stop, 0.0) if stop is not None else None,
         take_profit_1=take_profit_1,
         take_profit_2=take_profit_2,
+        risk_reward_1=risk_reward_1,
+        risk_reward_2=risk_reward_2,
         strategy_exit=max(strategy_exit, 0.0) if strategy_exit is not None else None,
         atr=current_atr,
         trend_level=trend,

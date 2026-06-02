@@ -16,18 +16,29 @@ from .equity_data import _cache_file
 from .equity_signals import company_name
 
 
-NEWS_FEEDS = (
-    "https://feeds.finance.yahoo.com/rss/2.0/headline?"
-    + urlencode(
-        {
-            "s": "BTC-USD,ETH-USD,AAPL,NVDA,TSM,SPY",
-            "region": "US",
-            "lang": "en-US",
-        }
+NEWS_FEEDS = {
+    "crypto": (
+        "https://www.coindesk.com/arc/outboundfeeds/rss/",
+        "https://cointelegraph.com/rss",
+        "https://decrypt.co/feed",
+        "https://news.google.com/rss/search?"
+        + urlencode({"q": "bitcoin OR ethereum crypto market", "hl": "en-US", "gl": "US", "ceid": "US:en"}),
     ),
-    "https://www.coindesk.com/arc/outboundfeeds/rss/",
-    "https://www.cnbc.com/id/100003114/device/rss/rss.html",
-)
+    "tw": (
+        "https://news.cnyes.com/rss/news/cat/tw_stock",
+        "https://news.google.com/rss/search?"
+        + urlencode({"q": "台股 OR 台灣股市", "hl": "zh-TW", "gl": "TW", "ceid": "TW:zh-Hant"}),
+        "https://feeds.finance.yahoo.com/rss/2.0/headline?"
+        + urlencode({"s": "2330.TW,0050.TW", "region": "TW", "lang": "zh-Hant-TW"}),
+    ),
+    "us": (
+        "https://www.cnbc.com/id/100003114/device/rss/rss.html",
+        "https://feeds.finance.yahoo.com/rss/2.0/headline?"
+        + urlencode({"s": "AAPL,NVDA,MSFT,SPY,QQQ", "region": "US", "lang": "en-US"}),
+        "https://news.google.com/rss/search?"
+        + urlencode({"q": "US stocks S&P 500 Nasdaq", "hl": "en-US", "gl": "US", "ceid": "US:en"}),
+    ),
+}
 NEWS_HEADERS = {
     "User-Agent": (
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
@@ -145,6 +156,21 @@ def _parse_rss(feed_url: str, payload: bytes, max_items: int) -> list[NewsItem]:
                 pass
         if title and link:
             items.append(NewsItem(title, channel_title, link, published))
+    if items:
+        return items
+    namespace = {"atom": "http://www.w3.org/2005/Atom"}
+    feed_title = root.findtext("atom:title", default=feed_url, namespaces=namespace)
+    for item in root.findall("atom:entry", namespace)[:max_items]:
+        title = (item.findtext("atom:title", default="", namespaces=namespace) or "").strip()
+        link_node = item.find("atom:link", namespace)
+        link = link_node.attrib.get("href", "").strip() if link_node is not None else ""
+        published = (
+            item.findtext("atom:published", default="", namespaces=namespace)
+            or item.findtext("atom:updated", default="", namespaces=namespace)
+            or ""
+        ).strip()
+        if title and link:
+            items.append(NewsItem(title, feed_title, link, published))
     return items
 
 
@@ -162,20 +188,37 @@ def fetch_market_news(
     cache_path_: str | Path = "outputs/news/market_news.json",
     refresh: bool = False,
     max_items: int = 8,
+    category: str = "us",
 ) -> list[NewsItem]:
     target = Path(cache_path_)
     if target.exists() and not refresh:
         cached = _load_news_cache(target)
         if cached:
             return cached[:max_items]
-    items: list[NewsItem] = []
-    for feed_url in NEWS_FEEDS:
+    feed_items: list[list[NewsItem]] = []
+    feeds = NEWS_FEEDS.get(category, NEWS_FEEDS["us"])
+    seen: set[str] = set()
+    for feed_url in feeds:
+        parsed: list[NewsItem] = []
         try:
             request = Request(feed_url, headers=NEWS_HEADERS)
             with urlopen(request, timeout=12) as response:
-                items.extend(_parse_rss(feed_url, response.read(), max_items))
+                for item in _parse_rss(feed_url, response.read(), max_items):
+                    key = item.link or item.title
+                    if key not in seen:
+                        seen.add(key)
+                        parsed.append(item)
         except Exception:
             continue
+        if parsed:
+            feed_items.append(parsed)
+    items: list[NewsItem] = []
+    for index in range(max(len(group) for group in feed_items) if feed_items else 0):
+        for group in feed_items:
+            if index < len(group):
+                items.append(group[index])
+            if len(items) >= max_items:
+                break
         if len(items) >= max_items:
             break
     if not items:

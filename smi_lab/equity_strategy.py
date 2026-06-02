@@ -50,9 +50,9 @@ def default_equity_config(market: str) -> EquitySelectionConfig:
         return EquitySelectionConfig(
             market_symbol="0050.TW",
             top_n=3,
-            rebalance_bars=40,
-            short_momentum_period=63,
-            long_momentum_period=60,
+            rebalance_bars=20,
+            short_momentum_period=20,
+            long_momentum_period=126,
             trend_period=100,
             fee_bps=14.25,
             slippage_bps=5.0,
@@ -61,8 +61,8 @@ def default_equity_config(market: str) -> EquitySelectionConfig:
         return EquitySelectionConfig(
             market_symbol="SPY",
             top_n=3,
-            rebalance_bars=20,
-            short_momentum_period=40,
+            rebalance_bars=40,
+            short_momentum_period=63,
             long_momentum_period=126,
             trend_period=200,
             fee_bps=1.0,

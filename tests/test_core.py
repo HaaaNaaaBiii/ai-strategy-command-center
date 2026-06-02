@@ -47,6 +47,7 @@ from smi_lab.equity_universe import equity_scan_symbols
 from smi_lab.market_info import cached_crypto_snapshots
 from smi_lab.paper import aggregate_snapshot, allocation_snapshot, update_forward_tracking
 from smi_lab.position_planner import build_rebalance_plan
+from smi_lab.price_alerts import check_equity_price_alerts, format_alert_message, AlertEvent
 from smi_lab.regime import attach_btc_momentum_regime, attach_cboe_regime
 from smi_lab.rotation import RotationConfig, _rebalance_schedule, backtest_rotation
 from smi_lab.strategy import build_feature_frame
@@ -723,6 +724,9 @@ class StrategyTests(unittest.TestCase):
         self.assertLess(plan.stop_loss, plan.entry_price)
         self.assertGreater(plan.take_profit_1, plan.entry_price)
         self.assertGreater(plan.take_profit_2, plan.take_profit_1)
+        self.assertIsNotNone(plan.risk_reward_1)
+        self.assertIsNotNone(plan.risk_reward_2)
+        self.assertGreaterEqual(plan.risk_reward_2, plan.risk_reward_1)
 
     def test_equity_scanner_builds_strategy_recommendations(self) -> None:
         index = pd.date_range("2025-01-01", periods=260, freq="1D", tz="UTC")
@@ -752,6 +756,7 @@ class StrategyTests(unittest.TestCase):
         self.assertEqual(recommendations["symbol"].tolist(), ["AAPL", "MSFT"])
         self.assertTrue((recommendations["action"] == "WAIT_FOR_BREAKOUT").all())
         self.assertIn("score", recommendations.columns)
+        self.assertIn("risk_reward_2", recommendations.columns)
         self.assertIn("equity_selection_scan", set(metrics["strategy"]))
         self.assertIn("2330.TW", equity_scan_symbols("tw"))
 
@@ -894,6 +899,90 @@ class StrategyTests(unittest.TestCase):
         self.assertAlmostEqual(float(btc["order_quantity"]), 0.05)
         self.assertEqual(doge["side"], "SELL")
         self.assertAlmostEqual(float(doge["order_quantity"]), 1000.0)
+
+    @patch("smi_lab.price_alerts.send_discord")
+    @patch("smi_lab.price_alerts._latest_price", return_value=(105.0, 106.0, 104.0))
+    def test_price_alerts_trigger_entry_with_mention(self, _: object, send_discord: object) -> None:
+        with TemporaryDirectory() as directory:
+            recommendations = Path(directory) / "recommendations.csv"
+            state = Path(directory) / "state.json"
+            pd.DataFrame(
+                [
+                    {
+                        "market": "us",
+                        "symbol": "AAPL",
+                        "company": "Apple",
+                        "entry_price": 105.0,
+                        "stop_loss": 95.0,
+                        "take_profit_1": 115.0,
+                        "take_profit_2": 125.0,
+                        "risk_reward_1": 1.0,
+                        "risk_reward_2": 2.0,
+                    }
+                ]
+            ).to_csv(recommendations, index=False)
+
+            events = check_equity_price_alerts(
+                recommendations,
+                state,
+                webhook_url="https://example.invalid/webhook",
+                mention="<@123>",
+                notify=True,
+            )
+
+        self.assertEqual(len(events), 1)
+        self.assertEqual(events[0].level, "ENTRY")
+        self.assertTrue(send_discord.called)
+        self.assertIn("<@123>", send_discord.call_args.args[0])
+
+    @patch("smi_lab.price_alerts.send_discord")
+    @patch("smi_lab.price_alerts._latest_price", return_value=(105.0, 106.0, 104.0))
+    def test_price_alerts_dry_run_does_not_record_state(self, _: object, send_discord: object) -> None:
+        with TemporaryDirectory() as directory:
+            recommendations = Path(directory) / "recommendations.csv"
+            state = Path(directory) / "state.json"
+            pd.DataFrame(
+                [
+                    {
+                        "market": "us",
+                        "symbol": "AAPL",
+                        "company": "Apple",
+                        "entry_price": 105.0,
+                        "stop_loss": 95.0,
+                        "take_profit_1": 115.0,
+                        "take_profit_2": 125.0,
+                    }
+                ]
+            ).to_csv(recommendations, index=False)
+
+            events = check_equity_price_alerts(
+                recommendations,
+                state,
+                notify=False,
+                record_state=False,
+            )
+
+        self.assertEqual(len(events), 1)
+        self.assertFalse(state.exists())
+        self.assertFalse(send_discord.called)
+
+    def test_alert_message_includes_rr_when_available(self) -> None:
+        message = format_alert_message(
+            AlertEvent(
+                market="us",
+                symbol="AAPL",
+                company="Apple",
+                level="TP2",
+                target_price=120.0,
+                last_price=121.0,
+                triggered_at="2026-01-01T00:00:00+00:00",
+                risk_reward=2.0,
+            ),
+            mention="<@123>",
+        )
+
+        self.assertIn("RR 2.00", message)
+        self.assertIn("<@123>", message)
 
     def test_cached_market_snapshot_uses_local_crypto_cache(self) -> None:
         index = pd.date_range("2025-01-01", periods=8, freq="4h", tz="UTC", name="open_time")

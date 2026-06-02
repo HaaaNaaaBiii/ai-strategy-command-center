@@ -33,6 +33,8 @@ SCAN_COLUMNS = [
     "stop_loss",
     "take_profit_1",
     "take_profit_2",
+    "risk_reward_1",
+    "risk_reward_2",
     "strategy_exit",
     "short_momentum_pct",
     "long_momentum_pct",

@@ -55,6 +55,7 @@ from smi_lab.paper import (
     update_forward_tracking,
 )
 from smi_lab.position_planner import build_rebalance_plan
+from smi_lab.price_alerts import check_equity_price_alerts
 from smi_lab.technical import summarize_universe
 
 
@@ -68,7 +69,79 @@ ACCOUNTS_FILE = ACCOUNT_DIR / "accounts.csv"
 POSITIONS_FILE = ACCOUNT_DIR / "positions.csv"
 ORDERS_FILE = ACCOUNT_DIR / "orders.csv"
 NEWS_FILE = OUTPUT_DIR / "news" / "market_news.json"
+NEWS_FILES = {
+    "crypto": OUTPUT_DIR / "news" / "crypto_news.json",
+    "tw": OUTPUT_DIR / "news" / "tw_news.json",
+    "us": OUTPUT_DIR / "news" / "us_news.json",
+}
+ALERT_STATE_FILE = OUTPUT_DIR / "alerts" / "equity_price_alerts_state.json"
 BROKER_IMPORT_DIR = DEFAULT_IMPORT_DIR
+
+
+I18N = {
+    "zh": {
+        "workspace": "工作區",
+        "control_panel": "控制面板",
+        "data_controls": "資料控制",
+        "language": "語言",
+        "dashboard": "儀錶板",
+        "crypto": "加密貨幣",
+        "stocks": "股票",
+        "accounts": "帳戶",
+        "research": "研究",
+        "records": "紀錄",
+        "deployment": "部署",
+        "dashboard_title": "策略儀錶板",
+        "dashboard_subtitle": "目前掃盤推薦、資料健康度、帳戶狀態與市場新聞。回測放在研究分頁。",
+        "crypto_mode": "加密策略模式",
+        "equity_scan": "股票掃盤",
+        "tracked_equity": "追蹤資產",
+        "tracked_positions": "追蹤持倉",
+        "tw_picks": "台股掃盤推薦",
+        "us_picks": "美股掃盤推薦",
+        "market_news": "市場新聞",
+        "refresh_news": "更新市場新聞",
+        "news_crypto": "加密",
+        "news_tw": "台股",
+        "news_us": "美股",
+        "stocks_title": "台股 / 美股策略",
+        "stocks_subtitle": "依市場調整的策略掃盤、K 線圖、進出場、停損、TP 與 RR。",
+        "latest_scan": "最新策略掃盤",
+        "price_alerts": "價格提醒",
+        "check_alerts": "檢查價格提醒",
+    },
+    "en": {
+        "workspace": "Workspace",
+        "control_panel": "Control Panel",
+        "data_controls": "Data controls",
+        "language": "Language",
+        "dashboard": "Dashboard",
+        "crypto": "Crypto",
+        "stocks": "Stocks",
+        "accounts": "Accounts",
+        "research": "Research",
+        "records": "Records",
+        "deployment": "Deployment",
+        "dashboard_title": "Strategy Dashboard",
+        "dashboard_subtitle": "Current scan recommendations, data health, account status, and market news. Backtests are kept in Research.",
+        "crypto_mode": "Crypto mode",
+        "equity_scan": "Equity scan",
+        "tracked_equity": "Tracked equity",
+        "tracked_positions": "Tracked positions",
+        "tw_picks": "Taiwan Scan Picks",
+        "us_picks": "U.S. Scan Picks",
+        "market_news": "Market News",
+        "refresh_news": "Refresh market news",
+        "news_crypto": "Crypto",
+        "news_tw": "Taiwan Stocks",
+        "news_us": "U.S. Stocks",
+        "stocks_title": "Taiwan / U.S. Stock Strategy",
+        "stocks_subtitle": "Market-adjusted scans, charts, entries, stops, take-profits, and RR.",
+        "latest_scan": "Latest Strategy Scan",
+        "price_alerts": "Price Alerts",
+        "check_alerts": "Check price alerts",
+    },
+}
 
 
 st.set_page_config(
@@ -76,6 +149,12 @@ st.set_page_config(
     page_icon=":chart_with_upwards_trend:",
     layout="wide",
 )
+
+
+def tr(key: str) -> str:
+    lang = st.session_state.get("lang", "zh")
+    return I18N.get(lang, I18N["zh"]).get(key, I18N["en"].get(key, key))
+
 
 def pct(value: float | int | None) -> str:
     if value is None or pd.isna(value):
@@ -124,6 +203,8 @@ def recommendation_cards(frame: pd.DataFrame, title: str, limit: int = 3) -> Non
             level_cols[1].metric("SL", price(row.get("stop_loss")))
             level_cols[0].metric("TP1", price(row.get("take_profit_1")))
             level_cols[1].metric("TP2", price(row.get("take_profit_2")))
+            if "risk_reward_2" in row and not pd.isna(row.get("risk_reward_2")):
+                st.metric("RR to TP2", f"{float(row.get('risk_reward_2')):.2f}")
 
 
 def safe_float(value: object, default: float = 0.0) -> float:
@@ -662,11 +743,31 @@ NAV_OPTIONS = [
     "Deployment",
 ]
 
-page = st.pills("Workspace", NAV_OPTIONS, default="Dashboard", label_visibility="collapsed") or "Dashboard"
+with st.sidebar:
+    language_choice = st.selectbox("Language / 語言", ["繁體中文", "English"], index=0)
+    st.session_state["lang"] = "zh" if language_choice == "繁體中文" else "en"
+
+NAV_LABELS = {
+    "Dashboard": tr("dashboard"),
+    "Crypto": tr("crypto"),
+    "Stocks": tr("stocks"),
+    "Accounts": tr("accounts"),
+    "Research": tr("research"),
+    "Records": tr("records"),
+    "Deployment": tr("deployment"),
+}
+label_to_page = {label: page for page, label in NAV_LABELS.items()}
+selected_label = st.pills(
+    tr("workspace"),
+    list(NAV_LABELS.values()),
+    default=NAV_LABELS["Dashboard"],
+    label_visibility="collapsed",
+)
+page = label_to_page.get(selected_label or NAV_LABELS["Dashboard"], "Dashboard")
 
 with st.sidebar:
-    st.title("Control Panel")
-    st.caption("Data controls only. Main navigation is on the top of the page.")
+    st.title(tr("control_panel"))
+    st.caption(tr("data_controls"))
     st.divider()
     st.caption("Crypto data")
     crypto_symbols = st.multiselect(
@@ -682,8 +783,8 @@ with st.sidebar:
 
 if page == "Dashboard":
     hero(
-        "Strategy Dashboard",
-        "Current scan recommendations, data health, account status, and market news. Backtests are kept in Research.",
+        tr("dashboard_title"),
+        tr("dashboard_subtitle"),
     )
     status = latest_status()
     crypto_snapshot = cached_crypto_snapshots(DEFAULT_SYMBOLS, crypto_interval)
@@ -708,21 +809,21 @@ if page == "Dashboard":
     failed_symbols = sum(int(item.get("failed_symbols", 0)) for item in scan_items if isinstance(item, dict))
     cols = st.columns(4)
     with cols[0]:
-        metric_card("Crypto mode", readiness, readiness_note)
+        metric_card(tr("crypto_mode"), readiness, readiness_note)
     with cols[1]:
-        metric_card("Equity scan", f"{loaded_symbols} loaded", f"{failed_symbols} failed")
+        metric_card(tr("equity_scan"), f"{loaded_symbols} loaded", f"{failed_symbols} failed")
     with cols[2]:
         tracked_equity = pd.to_numeric(accounts.get("equity", pd.Series(dtype=float)), errors="coerce").fillna(0.0).sum()
-        metric_card("Tracked equity", money(tracked_equity), "Manual broker snapshots")
+        metric_card(tr("tracked_equity"), money(tracked_equity), "Manual broker snapshots")
     with cols[3]:
         tracked_positions = len(positions) if not positions.empty else 0
-        metric_card("Tracked positions", tracked_positions, "FT / Cathay / Pionex")
+        metric_card(tr("tracked_positions"), tracked_positions, "FT / Cathay / Pionex")
 
     rec_left, rec_right = st.columns(2)
     with rec_left:
-        recommendation_cards(tw_scan, "Taiwan Scan Picks")
+        recommendation_cards(tw_scan, tr("tw_picks"))
     with rec_right:
-        recommendation_cards(us_scan, "U.S. Scan Picks")
+        recommendation_cards(us_scan, tr("us_picks"))
 
     market_a, market_b, market_c = st.columns(3)
     with market_a:
@@ -739,13 +840,21 @@ if page == "Dashboard":
         with position_col:
             st.plotly_chart(plot_positions(positions), width="stretch")
 
-    refresh_news = st.button("Refresh market news")
-    news = fetch_market_news(NEWS_FILE, refresh=refresh_news, max_items=6)
-    st.subheader("Market News")
-    news_cols = st.columns(3)
-    for idx, item in enumerate(news):
-        with news_cols[idx % 3]:
-            render_news_cards([item])
+    refresh_news = st.button(tr("refresh_news"))
+    st.subheader(tr("market_news"))
+    news_tabs = st.tabs([tr("news_crypto"), tr("news_tw"), tr("news_us")])
+    for tab, category in zip(news_tabs, ("crypto", "tw", "us")):
+        with tab:
+            news = fetch_market_news(
+                NEWS_FILES[category],
+                refresh=refresh_news,
+                max_items=6,
+                category=category,
+            )
+            news_cols = st.columns(3)
+            for idx, item in enumerate(news):
+                with news_cols[idx % 3]:
+                    render_news_cards([item])
 
     with st.expander("Market snapshot data"):
         st.caption("Crypto")
@@ -911,8 +1020,8 @@ elif page == "Crypto":
 
 elif page == "Stocks":
     hero(
-        "Taiwan / U.S. Stock Strategy",
-        "Market-adjusted selection, company names, selectable candlestick charts, and explicit entry, exit, stop, and TP levels.",
+        tr("stocks_title"),
+        tr("stocks_subtitle"),
     )
 
     def render_equity_page(title: str, market: str, defaults: tuple[str, ...]) -> None:
@@ -920,7 +1029,7 @@ elif page == "Stocks":
         scan_recommendations = read_csv_or_empty(EQUITY_SCAN_DIR / f"{market}_recommendations.csv")
         scan_ranking = read_csv_or_empty(EQUITY_SCAN_DIR / f"{market}_scan_ranking.csv")
         scan_summary = read_json_or_empty(EQUITY_SCAN_DIR / f"{market}_scan_summary.json")
-        st.subheader("Latest Strategy Scan")
+        st.subheader(tr("latest_scan"))
         if scan_summary:
             cols = st.columns(4)
             cols[0].metric("Scan status", str(scan_summary.get("status", "Unknown")))
@@ -945,6 +1054,8 @@ elif page == "Stocks":
                     "stop_loss",
                     "take_profit_1",
                     "take_profit_2",
+                    "risk_reward_1",
+                    "risk_reward_2",
                     "reason",
                 )
                 if column in scan_recommendations
@@ -1049,13 +1160,15 @@ elif page == "Stocks":
             return
         plan = build_equity_trade_plan(selected_symbol, universe, config, ranking)
         st.subheader(f"{selected_symbol} | {plan.company}")
-        cols = st.columns(6)
+        cols = st.columns(8)
         cols[0].metric("Action", plan.action)
         cols[1].metric("Entry", price(plan.entry_price))
         cols[2].metric("Strategy exit", price(plan.strategy_exit))
         cols[3].metric("Stop loss", price(plan.stop_loss))
         cols[4].metric("TP1", price(plan.take_profit_1))
         cols[5].metric("TP2", price(plan.take_profit_2))
+        cols[6].metric("RR1", "-" if plan.risk_reward_1 is None else f"{plan.risk_reward_1:.2f}")
+        cols[7].metric("RR2", "-" if plan.risk_reward_2 is None else f"{plan.risk_reward_2:.2f}")
         st.caption(plan.reason)
         markers: list[pd.Timestamp] = []
         if not result.rebalances.empty:
@@ -1101,11 +1214,36 @@ elif page == "Stocks":
             )
             st.plotly_chart(fig, width="stretch")
 
-    tw_tab, us_tab = st.tabs(["Taiwan Stocks", "U.S. Stocks"])
+    tw_tab, us_tab, alerts_tab = st.tabs(["Taiwan Stocks", "U.S. Stocks", tr("price_alerts")])
     with tw_tab:
         render_equity_page("Taiwan Stocks", "tw", equity_scan_symbols("tw"))
     with us_tab:
         render_equity_page("U.S. Stocks", "us", equity_scan_symbols("us"))
+    with alerts_tab:
+        st.subheader(tr("price_alerts"))
+        st.caption("Uses latest scan recommendations. Configure DISCORD_WEBHOOK_URL and DISCORD_MENTION for scheduled alerts.")
+        webhook = st.text_input("Discord webhook URL", value=os.getenv("DISCORD_WEBHOOK_URL", ""), type="password")
+        mention = st.text_input("Discord mention/tag", value=os.getenv("DISCORD_MENTION", ""), placeholder="<@USER_ID>")
+        dry_run = st.checkbox("Dry run", value=True)
+        if st.button(tr("check_alerts"), type="primary"):
+            try:
+                events = check_equity_price_alerts(
+                    webhook_url=webhook or None,
+                    mention=mention,
+                    notify=not dry_run,
+                    record_state=not dry_run,
+                )
+                if not events:
+                    st.info("No price alert triggered.")
+                else:
+                    st.success(f"{len(events)} alert(s) triggered.")
+                    st.dataframe(pd.DataFrame([event.to_dict() for event in events]), hide_index=True, width="stretch")
+            except Exception as exc:
+                st.error(f"Price alert check failed: {exc}")
+        state = read_json_or_empty(ALERT_STATE_FILE)
+        if state:
+            with st.expander("Alert state"):
+                st.json(state, expanded=False)
 
 elif page == "Accounts":
     hero(
@@ -1519,6 +1657,13 @@ elif page == "Records":
         EQUITY_SCAN_DIR / "us_recommendations.csv",
         EQUITY_SCAN_DIR / "us_scan_metrics.csv",
         EQUITY_SCAN_DIR / "us_scan_failures.csv",
+        OUTPUT_DIR / "equity_optimization" / "latest_optimization_report.json",
+        OUTPUT_DIR / "equity_optimization" / "tw_top_candidates.csv",
+        OUTPUT_DIR / "equity_optimization" / "us_top_candidates.csv",
+        NEWS_FILES["crypto"],
+        NEWS_FILES["tw"],
+        NEWS_FILES["us"],
+        ALERT_STATE_FILE,
         ACCOUNTS_FILE,
         POSITIONS_FILE,
         ORDERS_FILE,
