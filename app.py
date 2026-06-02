@@ -21,7 +21,8 @@ from smi_lab.accounts import (
     upsert_account,
     upsert_position,
 )
-from smi_lab.data import DEFAULT_SYMBOLS, bars_for_years, data_window, load_universe
+from smi_lab.crypto_universe import crypto_scan_symbols, load_crypto_scan_universe
+from smi_lab.data import DEFAULT_SYMBOLS, bars_for_years, data_window
 from smi_lab.equity_data import (
     DEFAULT_TW_SYMBOLS,
     DEFAULT_US_SYMBOLS,
@@ -270,14 +271,19 @@ def read_json_or_empty(path: Path) -> dict[str, object]:
 def load_crypto_data(
     symbols: list[str], interval: str, bars: int, refresh: bool
 ) -> dict[str, pd.DataFrame]:
-    return load_universe(
+    include_funding = len(symbols) <= 12
+    universe, failures = load_crypto_scan_universe(
         symbols,
         interval=interval,
         bars=bars,
         refresh=refresh,
         market="perpetual",
-        include_funding=True,
+        include_funding=include_funding,
     )
+    st.session_state["crypto_load_failures"] = failures
+    if not universe:
+        raise RuntimeError("No crypto symbols could be loaded.")
+    return universe
 
 
 def send_report(
@@ -936,7 +942,7 @@ def render_live_crypto_desk(
     capital = col_c.number_input("Crypto controlled capital (USDT)", min_value=0.0, value=float(latest_equity), step=100.0)
     min_trade_value = st.number_input("Crypto minimum order value (USDT)", min_value=0.0, value=25.0, step=5.0)
     try:
-        universe = load_crypto_data(crypto_symbols, crypto_interval, crypto_bars, refresh_crypto)
+        universe = load_crypto_data(selected_crypto_symbols, crypto_interval, crypto_bars, refresh_crypto)
         config, offsets, _ = load_allocation_strategy()
         snapshot = allocation_snapshot(universe, config, offsets)
         allocation = aggregate_snapshot(snapshot)
@@ -1047,16 +1053,45 @@ with st.sidebar:
     st.caption(tr("data_controls"))
     st.divider()
     st.caption("Crypto data")
-    crypto_symbols = st.multiselect(
-        "Crypto universe",
-        list(DEFAULT_SYMBOLS),
-        default=list(DEFAULT_SYMBOLS),
+    crypto_universe_mode = st.selectbox(
+        "Crypto universe source",
+        ["Top 100 market cap", "Core 4", "Custom"],
+        index=0,
     )
+    crypto_limit = st.slider("Crypto market-cap limit", 20, 100, 100, step=10)
+    cached_top_crypto = list(crypto_scan_symbols(limit=crypto_limit, cache_only=True))
+    if st.button("Refresh market-cap universe"):
+        st.session_state["top_crypto_symbols"] = list(
+            crypto_scan_symbols(limit=crypto_limit, refresh=True)
+        )
+    top_crypto_symbols = st.session_state.get("top_crypto_symbols", cached_top_crypto)
+    if crypto_universe_mode == "Core 4":
+        crypto_symbols = st.multiselect(
+            "Crypto universe",
+            list(DEFAULT_SYMBOLS),
+            default=list(DEFAULT_SYMBOLS),
+        )
+    elif crypto_universe_mode == "Custom":
+        custom_crypto = st.text_area(
+            "Custom crypto symbols",
+            value="\n".join(DEFAULT_SYMBOLS),
+            height=110,
+        )
+        crypto_symbols = [symbol.strip().upper() for symbol in custom_crypto.splitlines() if symbol.strip()]
+    else:
+        crypto_options = list(top_crypto_symbols or DEFAULT_SYMBOLS)
+        crypto_symbols = st.multiselect(
+            "Crypto universe",
+            crypto_options,
+            default=crypto_options,
+        )
+        st.caption(f"{len(crypto_options)} cached market-cap candidates. Stablecoins and wrapped duplicates are excluded.")
     crypto_interval = st.selectbox("Crypto interval", ["4h", "1h", "1d", "15m"], index=0)
     crypto_years = st.slider("Crypto history years", 1, 5, 2)
     crypto_bars = bars_for_years(crypto_interval, crypto_years)
     refresh_crypto = st.checkbox("Refresh market data", value=False)
 
+selected_crypto_symbols = list(dict.fromkeys(crypto_symbols or list(DEFAULT_SYMBOLS)))
 
 if page == "Dashboard":
     hero(
@@ -1064,7 +1099,7 @@ if page == "Dashboard":
         tr("dashboard_subtitle"),
     )
     status = latest_status()
-    crypto_snapshot = cached_crypto_snapshots(DEFAULT_SYMBOLS, crypto_interval)
+    crypto_snapshot = cached_crypto_snapshots(selected_crypto_symbols, crypto_interval)
     tw_scan = read_csv_or_empty(EQUITY_SCAN_DIR / "tw_recommendations.csv")
     us_scan = read_csv_or_empty(EQUITY_SCAN_DIR / "us_recommendations.csv")
     latest_scan_summary = read_json_or_empty(EQUITY_SCAN_DIR / "latest_scan_summary.json")
@@ -1154,13 +1189,16 @@ elif page == "Crypto":
         if st.button("Refresh crypto signal", type="primary"):
             try:
                 universe = load_crypto_data(
-                    crypto_symbols,
+                    selected_crypto_symbols,
                     crypto_interval,
                     max(crypto_bars, 500),
                     refresh_crypto,
                 )
                 st.session_state["crypto_universe"] = universe
                 st.success(f"Loaded {len(universe)} symbols: {data_window(next(iter(universe.values())))}")
+                failures = st.session_state.get("crypto_load_failures")
+                if isinstance(failures, pd.DataFrame) and not failures.empty:
+                    st.caption(f"Skipped {len(failures)} symbols without usable market data.")
             except Exception as exc:
                 st.error(f"Crypto data load failed: {exc}")
         universe = st.session_state.get("crypto_universe")
@@ -1191,7 +1229,7 @@ elif page == "Crypto":
         if st.button("Update forward paper tracking", type="primary"):
             try:
                 universe = load_crypto_data(
-                    list(DEFAULT_SYMBOLS),
+                    selected_crypto_symbols,
                     "4h",
                     max(bars_for_years("4h", 2), 500),
                     refresh_crypto,
@@ -1282,7 +1320,7 @@ elif page == "Crypto":
                 universe = st.session_state.get("crypto_universe")
                 if not universe:
                     universe = load_crypto_data(
-                        list(DEFAULT_SYMBOLS),
+                        selected_crypto_symbols,
                         "4h",
                         max(bars_for_years("4h", 2), 500),
                         False,
@@ -1704,7 +1742,7 @@ elif page == "Accounts":
                         ]
                     )
                     planning_accounts = pd.concat([accounts, override_row], ignore_index=True)
-                universe = load_crypto_data(crypto_symbols, crypto_interval, crypto_bars, refresh_crypto)
+                universe = load_crypto_data(selected_crypto_symbols, crypto_interval, crypto_bars, refresh_crypto)
                 config, offsets, _ = load_allocation_strategy()
                 snapshot = allocation_snapshot(universe, config, offsets)
                 allocation = aggregate_snapshot(snapshot)

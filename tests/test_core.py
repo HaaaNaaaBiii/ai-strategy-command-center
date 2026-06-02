@@ -35,6 +35,7 @@ from smi_lab.accounts import (
     upsert_account,
 )
 from smi_lab.broker_import import normalize_broker_positions, sync_broker_exports
+from smi_lab.crypto_universe import crypto_scan_symbols, load_crypto_scan_universe
 from smi_lab.equity_live import build_equity_live_order_plan, load_live_strategy_memory, remember_live_plan
 from smi_lab.equity_signals import add_company_names, build_equity_trade_plan, explain_equity_selection_reason
 from smi_lab.equity_scanner import build_scan_recommendations
@@ -809,6 +810,10 @@ class StrategyTests(unittest.TestCase):
         self.assertIn("rank 2", recommendations.iloc[1]["reason"])
         self.assertIn("equity_selection_scan", set(metrics["strategy"]))
         self.assertIn("2330.TW", equity_scan_symbols("tw"))
+        self.assertGreater(len(equity_scan_symbols("tw")), 100)
+        self.assertGreater(len(equity_scan_symbols("us")), 140)
+        self.assertIn("3661.TW", equity_scan_symbols("tw"))
+        self.assertIn("PANW", equity_scan_symbols("us"))
 
     def test_equity_reason_explains_volatility_filter(self) -> None:
         reason = explain_equity_selection_reason(
@@ -1164,6 +1169,44 @@ class StrategyTests(unittest.TestCase):
 
         self.assertEqual(snapshot.iloc[0]["symbol"], "BTCUSDT")
         self.assertGreater(float(snapshot.iloc[0]["change_pct"]), 0.0)
+
+    @patch("smi_lab.crypto_universe._fetch_coingecko_markets")
+    def test_crypto_market_cap_universe_filters_stables_and_maps_usdt(self, fetch_markets: object) -> None:
+        fetch_markets.return_value = [
+            {"id": "bitcoin", "symbol": "btc", "market_cap_rank": 1},
+            {"id": "tether", "symbol": "usdt", "market_cap_rank": 3},
+            {"id": "wrapped-bitcoin", "symbol": "wbtc", "market_cap_rank": 14},
+            {"id": "solana", "symbol": "sol", "market_cap_rank": 6},
+        ]
+        with TemporaryDirectory() as directory:
+            symbols = crypto_scan_symbols(
+                limit=10,
+                refresh=True,
+                cache_path=Path(directory) / "top.json",
+            )
+
+        self.assertIn("BTCUSDT", symbols)
+        self.assertIn("SOLUSDT", symbols)
+        self.assertNotIn("USDTUSDT", symbols)
+        self.assertNotIn("WBTCUSDT", symbols)
+
+    @patch("smi_lab.crypto_universe.get_klines")
+    def test_crypto_scan_universe_records_symbol_failures(self, get_klines_mock: object) -> None:
+        def loader(symbol: str, **_: object) -> pd.DataFrame:
+            if symbol == "BADUSDT":
+                raise RuntimeError("missing pair")
+            return cached_candles("2025-01-01", 80)
+
+        get_klines_mock.side_effect = loader
+        universe, failures = load_crypto_scan_universe(
+            ["BTCUSDT", "BADUSDT"],
+            bars=80,
+            min_bars=50,
+            request_pause=0.0,
+        )
+
+        self.assertIn("BTCUSDT", universe)
+        self.assertEqual(failures.iloc[0]["symbol"], "BADUSDT")
 
     def test_equity_symbol_news_uses_cache_only_without_network(self) -> None:
         with TemporaryDirectory() as directory:

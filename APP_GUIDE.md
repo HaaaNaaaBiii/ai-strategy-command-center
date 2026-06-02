@@ -33,6 +33,8 @@ The detailed equity strategy review is in `docs/equity_strategy_review.md`. It s
 
 Crypto data first attempts Binance USD-M perpetual candles. If that endpoint is blocked by region policy such as HTTP 451, the loader tries Bybit USDT perpetual candles before falling back to Binance spot candles. Bybit V5 candles are fetched backwards in pages, so one-to-five-year 4h backtests are not limited to the latest 1000 candles. The returned frame records the active source in `data_source`, and spot fallback carries a `data_warning` so the app can distinguish true perpetual data from a degraded source.
 
+Crypto broad scans use CoinGecko `/coins/markets` as the market-cap universe source, requesting up to the top 100 coins by USD market cap. The app filters stablecoins and wrapped duplicates, maps each remaining coin ticker to a centralized `USDT` pair, then keeps only symbols with usable Binance/Bybit market data. Failed symbols are written as scan failures instead of breaking the whole scan.
+
 Equity data first uses Yahoo Finance chart data. If Yahoo rate-limits with HTTP 429, the app returns usable cache when available and falls back to Stooq daily data for daily charts when no cache exists.
 
 Dashboard news uses RSS feeds with a local cache. If all feeds are temporarily unavailable, the app keeps the page alive and shows the latest cached items when present.
@@ -65,11 +67,26 @@ Generated plans can be appended to the order tracker as `PLANNED` rows. The app 
 
 The stock page now treats the earlier small Taiwan/U.S. lists as seed watchlists, not final recommendations. `scan_equity_signals.py` scans broader liquid Taiwan and U.S. universes, ranks symbols with the strategy, and writes current recommendations to `outputs/equity_scan/`.
 
+Current default equity scan coverage is intentionally larger than the original seed lists:
+
+- Taiwan: 137 large and mid-large liquid Taiwan-listed symbols, with `0050.TW` kept as the market gate.
+- U.S.: 155 liquid U.S.-listed symbols across mega-cap, semiconductors, software, financials, healthcare, industrials, and consumer leaders, with `SPY` kept as the market gate.
+
+This is still not a full exchange-wide scan. It is a practical liquid universe designed to avoid rate-limit failures and thin-liquidity noise while giving the strategy a much larger candidate pool than the prior 54 Taiwan and 63 U.S. symbols.
+
 Run manually:
 
 ```powershell
 .\.venv\Scripts\python.exe scan_equity_signals.py --market both --interval 1d --range 2y --refresh
 ```
+
+Run the broader crypto market-cap scan manually:
+
+```powershell
+.\.venv\Scripts\python.exe scan_signals.py --strategy allocation --crypto-universe top100 --crypto-limit 100 --interval 4h --bars 1200 --refresh
+```
+
+Use `--crypto-universe core` to force the old BTC/ETH/DOGE/SOL universe, or `--crypto-universe symbols --symbols BTCUSDT ETHUSDT SOLUSDT` to scan an explicit custom list.
 
 Active Codex automations:
 
@@ -79,10 +96,10 @@ Active Codex automations:
 
 Stock scans are intentionally not hourly. Taiwan and U.S. strategies use daily bars, so official strategy recommendations should be based on post-close data. Intraday observations can be shown in the app, but they should not update Live Desk order intents unless a separate intraday strategy is designed and backtested.
 
-The latest equity optimization selected Top 3 sleeves for both markets. Taiwan uses 20/126-day momentum with 20-day rebalance and 0050.TW as the gate. U.S. uses 63/126-day momentum with 40-day rebalance and SPY as the gate. The latest two-year broad-universe backtests were:
+The latest equity optimization selected Top 3 sleeves for both markets. Taiwan uses 40/60-day momentum with 40-day rebalance, EMA200 trend, and 0050.TW as the gate. U.S. uses 63/126-day momentum with 40-day rebalance and SPY as the gate. The latest two-year broad-universe backtests were:
 
-- Taiwan strategy: `+492.37%` versus 0050.TW `+148.55%`, max drawdown `-19.55%`.
-- U.S. strategy: `+207.82%` versus SPY `+43.27%`, max drawdown `-18.41%`.
+- Taiwan strategy: `+472.23%` versus 0050.TW `+149.73%`, max drawdown `-19.35%`.
+- U.S. strategy: `+209.40%` versus SPY `+43.27%`, max drawdown `-20.54%`.
 
 Stock trade plans no longer expose entry, stop, TP, or RR because that execution overlay is not part of the current backtested live strategy. The legacy price-level alert script is disabled by default:
 

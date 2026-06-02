@@ -7,7 +7,7 @@ from dataclasses import replace
 
 import pandas as pd
 
-from smi_lab.equity_data import load_equity_universe
+from smi_lab.equity_scanner import load_equity_scan_universe
 from smi_lab.equity_strategy import (
     backtest_equity_selection,
     benchmark_buy_and_hold,
@@ -49,13 +49,15 @@ def weighting_configs(config, weighting: str):
 def run_market(market: str, interval: str, range_: str, refresh: bool, weighting: str) -> None:
     config = default_equity_config(market)
     symbols = list(dict.fromkeys([*equity_scan_symbols(market), config.market_symbol]))
-    universe = load_equity_universe(
-        symbols,
+    universe, failures = load_equity_scan_universe(
         market=market,
+        symbols=symbols,
         interval=interval,
         range_=range_,
         refresh=refresh,
     )
+    if config.market_symbol not in universe:
+        raise RuntimeError(f"{market} benchmark is unavailable: {config.market_symbol}")
     ranking = rank_equities(universe, config)
     results = {
         label: backtest_equity_selection(universe, variant_config)
@@ -67,6 +69,7 @@ def run_market(market: str, interval: str, range_: str, refresh: bool, weighting
         slippage_bps=config.slippage_bps,
     )
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+    failures.to_csv(OUTPUT_DIR / f"{market}_failures.csv", index=False)
     ranking.to_csv(OUTPUT_DIR / f"{market}_ranking.csv", index=False)
     for label, result in results.items():
         suffix = "" if label == "equal" else f"_{label}"
@@ -100,6 +103,8 @@ def run_market(market: str, interval: str, range_: str, refresh: bool, weighting
                     },
                 }[market],
                 "config": config.to_dict(),
+                "loaded_symbols": len(universe),
+                "failed_symbols": len(failures),
                 "benchmark_return_pct": benchmark.metrics["return_pct"],
                 "strategy_variants": {
                     label: {

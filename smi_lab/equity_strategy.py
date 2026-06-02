@@ -59,10 +59,10 @@ def default_equity_config(market: str) -> EquitySelectionConfig:
         return EquitySelectionConfig(
             market_symbol="0050.TW",
             top_n=3,
-            rebalance_bars=20,
-            short_momentum_period=20,
-            long_momentum_period=126,
-            trend_period=100,
+            rebalance_bars=40,
+            short_momentum_period=40,
+            long_momentum_period=60,
+            trend_period=200,
             fee_bps=14.25,
             slippage_bps=5.0,
         )

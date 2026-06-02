@@ -7,7 +7,8 @@ from pathlib import Path
 import pandas as pd
 
 from smi_lab.config import StrategyConfig, load_config, load_portfolio
-from smi_lab.data import DEFAULT_SYMBOLS, load_universe
+from smi_lab.crypto_universe import crypto_scan_symbols, load_crypto_scan_universe
+from smi_lab.data import DEFAULT_SYMBOLS
 from smi_lab.notifier import format_signal, send_discord, send_telegram
 from smi_lab.paper import (
     allocation_snapshot,
@@ -38,6 +39,18 @@ DEFAULT_MARKET = "perpetual" if DEFAULT_PORTFOLIO != LEGACY_PORTFOLIO else "spot
 def parser() -> argparse.ArgumentParser:
     command = argparse.ArgumentParser(description="Scan fresh SMI entry signals and optionally notify.")
     command.add_argument("--symbols", nargs="+", default=list(DEFAULT_SYMBOLS))
+    command.add_argument(
+        "--crypto-universe",
+        choices=["top100", "core", "symbols"],
+        default="top100",
+        help="Crypto scan universe: CoinGecko market-cap top list, core BTC/ETH/DOGE/SOL, or explicit --symbols.",
+    )
+    command.add_argument("--crypto-limit", type=int, default=100)
+    command.add_argument(
+        "--include-funding",
+        action="store_true",
+        help="Attach funding rates during crypto allocation scans. Disabled by default for broad top100 scans.",
+    )
     command.add_argument("--interval", default="4h", choices=["15m", "1h", "4h", "1d"])
     command.add_argument("--bars", type=int, default=500)
     command.add_argument("--config", default="outputs/best_strategy.json")
@@ -68,18 +81,35 @@ def configured_sleeves(args: argparse.Namespace) -> list[tuple[str, float, Strat
     return [("single_strategy", 1.0, load_config(args.config))]
 
 
+def resolved_crypto_symbols(args: argparse.Namespace) -> list[str]:
+    if args.crypto_universe == "core":
+        return list(DEFAULT_SYMBOLS)
+    if args.crypto_universe == "symbols":
+        return [symbol.upper() for symbol in args.symbols]
+    return list(
+        crypto_scan_symbols(
+            limit=args.crypto_limit,
+            refresh=args.refresh,
+        )
+    )
+
+
 def scan(args: argparse.Namespace) -> list[tuple[str, float, Signal]]:
     sleeves = configured_sleeves(args)
-    requested_symbols = [symbol.upper() for symbol in args.symbols]
+    requested_symbols = resolved_crypto_symbols(args)
     requires_btc_regime = any(
         config.regime_source == "btc_momentum" for _, _, config in sleeves
     )
-    symbols = list(dict.fromkeys(
-        list(DEFAULT_SYMBOLS) if requires_btc_regime else requested_symbols
-    ))
-    universe = load_universe(
-        symbols, args.interval, args.bars, refresh=args.refresh, market=args.market
+    symbols = list(dict.fromkeys([*DEFAULT_SYMBOLS, *requested_symbols]))
+    universe, _ = load_crypto_scan_universe(
+        symbols,
+        interval=args.interval,
+        bars=args.bars,
+        refresh=args.refresh,
+        market=args.market,
     )
+    if "BTCUSDT" not in universe:
+        raise RuntimeError("BTCUSDT is required for the crypto signal risk gate.")
     if requires_btc_regime:
         settings = {
             (config.btc_ema_period, config.momentum_period, config.momentum_top_n)
@@ -96,6 +126,7 @@ def scan(args: argparse.Namespace) -> list[tuple[str, float, Signal]]:
         (sleeve_name, weight, signal)
         for sleeve_name, weight, config in sleeves
         for symbol in requested_symbols
+        if symbol in universe
         if (signal := latest_signal(
             symbol.upper(),
             universe[symbol],
@@ -106,18 +137,36 @@ def scan(args: argparse.Namespace) -> list[tuple[str, float, Signal]]:
 
 def allocation_report(args: argparse.Namespace) -> tuple[str, str]:
     config, offsets, _ = load_allocation_strategy()
-    universe = load_universe(
-        list(DEFAULT_SYMBOLS),
-        args.interval,
-        max(args.bars, 500),
+    symbols = resolved_crypto_symbols(args)
+    min_bars = max(config.momentum_period, config.asset_ema_period, config.btc_ema_period) + 3
+    universe, failures = load_crypto_scan_universe(
+        symbols,
+        limit=args.crypto_limit,
+        interval=args.interval,
+        bars=max(args.bars, 500),
         refresh=args.refresh,
         market="perpetual",
-        include_funding=True,
+        include_funding=args.include_funding,
+        min_bars=min_bars,
     )
+    if "BTCUSDT" not in universe:
+        raise RuntimeError("BTCUSDT is required for the crypto allocation risk gate.")
     update = update_forward_tracking(universe)
     snapshot = allocation_snapshot(universe, config, offsets)
     marker = str(snapshot.attrs.get("latest_candle"))
-    return format_allocation_report(snapshot, update), marker
+    message = format_allocation_report(snapshot, update)
+    lines = [
+        message,
+        "",
+        f"Universe mode: {args.crypto_universe}",
+        f"Loaded symbols: {len(universe)}",
+        f"Failed symbols: {len(failures)}",
+    ]
+    if not failures.empty:
+        failed_symbols = ", ".join(failures["symbol"].astype(str).head(15).tolist())
+        suffix = " ..." if len(failures) > 15 else ""
+        lines.append(f"Failed sample: {failed_symbols}{suffix}")
+    return "\n".join(lines), marker
 
 
 def send_message(channel: str, message: str) -> None:

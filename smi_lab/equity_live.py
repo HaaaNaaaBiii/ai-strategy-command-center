@@ -7,7 +7,7 @@ from pathlib import Path
 import pandas as pd
 
 
-LIVE_STRATEGY_VERSION = "live-desk-v2-rotation-rebalance-only-2026-06-02"
+LIVE_STRATEGY_VERSION = "live-desk-v3-expanded-universe-rebalance-2026-06-02"
 
 LIVE_ORDER_COLUMNS = [
     "account_id",

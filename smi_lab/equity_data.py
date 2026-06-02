@@ -74,8 +74,13 @@ def _fetch_stooq_daily(symbol: str, range_: str) -> pd.DataFrame:
         f"{STOOQ_DAILY_URL}?{params}",
         headers={"User-Agent": YAHOO_HEADERS["User-Agent"]},
     )
-    with urlopen(request, timeout=20) as response:
-        frame = pd.read_csv(response)
+    try:
+        with urlopen(request, timeout=20) as response:
+            frame = pd.read_csv(response)
+    except pd.errors.ParserError as exc:
+        raise RuntimeError(f"Stooq daily response is not parseable for {symbol}: {exc}") from exc
+    except (HTTPError, URLError, TimeoutError) as exc:
+        raise RuntimeError(f"Stooq daily request failed for {symbol}: {exc}") from exc
     if frame.empty or "Date" not in frame:
         raise RuntimeError(f"No Stooq daily data returned for {symbol}.")
     frame = frame.rename(
