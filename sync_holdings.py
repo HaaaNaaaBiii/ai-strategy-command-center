@@ -4,6 +4,7 @@ import argparse
 from pathlib import Path
 
 from smi_lab.broker_import import DEFAULT_IMPORT_DIR, sync_broker_exports
+from smi_lab.paths import output_path
 
 
 def parser() -> argparse.ArgumentParser:
@@ -11,7 +12,7 @@ def parser() -> argparse.ArgumentParser:
         description="Automatically import Firstrade/Cathay position CSV exports."
     )
     command.add_argument("--import-dir", default=str(DEFAULT_IMPORT_DIR))
-    command.add_argument("--positions-path", default="outputs/accounts/positions.csv")
+    command.add_argument("--positions-path", default=str(output_path("accounts", "positions.csv")))
     return command
 
 

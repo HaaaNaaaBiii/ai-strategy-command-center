@@ -8,9 +8,10 @@ import pandas as pd
 
 from .accounts import POSITION_COLUMNS, PositionSnapshot, load_table, save_table
 from .equity_signals import company_name
+from .paths import data_path, output_path
 
 
-DEFAULT_IMPORT_DIR = Path("data/broker_imports")
+DEFAULT_IMPORT_DIR = data_path("broker_imports")
 
 ALIASES = {
     "symbol": {
@@ -226,7 +227,7 @@ def normalize_broker_positions(
 
 def sync_broker_exports(
     import_dir: str | Path = DEFAULT_IMPORT_DIR,
-    positions_path: str | Path = "outputs/accounts/positions.csv",
+    positions_path: str | Path = output_path("accounts", "positions.csv"),
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
     source = Path(import_dir)
     existing = load_table(positions_path, POSITION_COLUMNS)

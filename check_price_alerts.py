@@ -3,13 +3,14 @@ from __future__ import annotations
 import argparse
 
 from smi_lab.notifier import resolve_discord_mention, resolve_discord_webhook_url
+from smi_lab.paths import output_path
 from smi_lab.price_alerts import check_equity_price_alerts
 
 
 def parser() -> argparse.ArgumentParser:
     command = argparse.ArgumentParser(description="Check equity scan levels and send Discord alerts.")
-    command.add_argument("--recommendations", default="outputs/equity_scan/latest_recommendations.csv")
-    command.add_argument("--state", default="outputs/alerts/equity_price_alerts_state.json")
+    command.add_argument("--recommendations", default=str(output_path("equity_scan", "latest_recommendations.csv")))
+    command.add_argument("--state", default=str(output_path("alerts", "equity_price_alerts_state.json")))
     command.add_argument("--webhook-url", default=resolve_discord_webhook_url())
     command.add_argument("--mention", default=resolve_discord_mention())
     command.add_argument("--no-refresh", action="store_true")

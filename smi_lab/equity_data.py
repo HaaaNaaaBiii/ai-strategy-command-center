@@ -10,6 +10,8 @@ from urllib.request import Request, urlopen
 
 import pandas as pd
 
+from .paths import data_path
+
 
 YAHOO_CHART_URL = "https://query1.finance.yahoo.com/v8/finance/chart"
 YAHOO_CHART_FALLBACK_URL = "https://query2.finance.yahoo.com/v8/finance/chart"
@@ -135,7 +137,7 @@ def fetch_yahoo_chart(
     symbol: str,
     interval: str = "1d",
     range_: str = "1y",
-    cache_dir: str | Path = "data/equities",
+    cache_dir: str | Path = data_path("equities"),
     refresh: bool = False,
 ) -> pd.DataFrame:
     target = _cache_file(cache_dir, symbol, interval, range_)

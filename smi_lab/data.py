@@ -10,6 +10,8 @@ from urllib.request import Request, urlopen
 
 import pandas as pd
 
+from .paths import data_path
+
 
 DEFAULT_SYMBOLS = ("BTCUSDT", "ETHUSDT", "DOGEUSDT", "SOLUSDT")
 API_BASE = "https://data-api.binance.vision"
@@ -292,7 +294,7 @@ def get_funding_rates(
     symbol: str,
     start: pd.Timestamp,
     end: pd.Timestamp,
-    cache_dir: str | Path = "data",
+    cache_dir: str | Path = data_path(),
     refresh: bool = False,
 ) -> pd.DataFrame:
     target = funding_cache_path(cache_dir, symbol)
@@ -346,7 +348,7 @@ def get_klines(
     symbol: str,
     interval: str = "4h",
     bars: int = 4500,
-    cache_dir: str | Path = "data",
+    cache_dir: str | Path = data_path(),
     refresh: bool = False,
     market: str = "spot",
     include_funding: bool = False,
@@ -393,7 +395,7 @@ def load_universe(
     symbols: tuple[str, ...] | list[str] = DEFAULT_SYMBOLS,
     interval: str = "4h",
     bars: int = 4500,
-    cache_dir: str | Path = "data",
+    cache_dir: str | Path = data_path(),
     refresh: bool = False,
     market: str = "spot",
     include_funding: bool = False,

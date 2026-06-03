@@ -12,6 +12,7 @@ venv/
 *.log
 streamlit.out.log
 streamlit.err.log
+storage.local.json
 
 # Market data cache and generated research artifacts
 data/

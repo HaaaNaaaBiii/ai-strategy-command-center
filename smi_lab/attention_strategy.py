@@ -14,12 +14,13 @@ import pandas as pd
 
 from .backtest import _metrics
 from .equity_data import fetch_yahoo_chart
+from .paths import data_path, output_path
 
 
 GDELT_DOC_URL = "https://api.gdeltproject.org/api/v2/doc/doc"
 WIKIMEDIA_PAGEVIEWS_URL = "https://wikimedia.org/api/rest_v1/metrics/pageviews/per-article/en.wikipedia/all-access/user"
-DEFAULT_OUTPUT_DIR = Path("outputs/attention_strategy")
-DEFAULT_CACHE_DIR = Path("data/attention_strategy")
+DEFAULT_OUTPUT_DIR = output_path("attention_strategy")
+DEFAULT_CACHE_DIR = data_path("attention_strategy")
 
 FINANCIAL_NOISE_TERMS = (
     "stock",
@@ -292,7 +293,7 @@ def fetch_wikimedia_attention_timeline(
 
 
 def load_imported_attention(
-    path: str | Path = "data/attention_sources",
+    path: str | Path = data_path("attention_sources"),
 ) -> pd.DataFrame:
     directory = Path(path)
     if not directory.exists():

@@ -67,11 +67,12 @@ from smi_lab.paper import (
     load_allocation_strategy,
     update_forward_tracking,
 )
+from smi_lab.paths import output_path
 from smi_lab.position_planner import build_rebalance_plan
 from smi_lab.technical import summarize_universe
 
 
-OUTPUT_DIR = Path("outputs")
+OUTPUT_DIR = output_path()
 MARKET_ALPHA_DIR = OUTPUT_DIR / "market_alpha_staggered"
 TRACKING_DIR = OUTPUT_DIR / "forward_tracking"
 EQUITY_SELECTION_DIR = OUTPUT_DIR / "equity_selection"
@@ -2192,6 +2193,8 @@ elif page == "Records":
         EQUITY_SCAN_DIR / "us_recommendations.csv",
         EQUITY_SCAN_DIR / "us_scan_metrics.csv",
         EQUITY_SCAN_DIR / "us_scan_failures.csv",
+        OUTPUT_DIR / "external_research" / "tw_investing_monitor.csv",
+        OUTPUT_DIR / "external_research" / "us_investing_monitor.csv",
         ATTENTION_DIR / "attention_report.json",
         ATTENTION_DIR / "attention_metrics.csv",
         ATTENTION_DIR / "attention_config_search.csv",

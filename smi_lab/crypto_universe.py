@@ -11,11 +11,12 @@ from urllib.request import Request, urlopen
 import pandas as pd
 
 from .data import DEFAULT_SYMBOLS, get_klines
+from .paths import data_path
 
 
 COINGECKO_MARKETS_URL = "https://api.coingecko.com/api/v3/coins/markets"
 DEFAULT_CRYPTO_MARKET_CAP_LIMIT = 100
-DEFAULT_CRYPTO_UNIVERSE_CACHE = Path("data/crypto_universe/coingecko_top_markets.json")
+DEFAULT_CRYPTO_UNIVERSE_CACHE = data_path("crypto_universe", "coingecko_top_markets.json")
 
 STABLE_OR_WRAPPED_IDS = {
     "binance-bridged-usdt-bnb-smart-chain",

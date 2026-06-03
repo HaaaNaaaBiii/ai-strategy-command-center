@@ -15,11 +15,12 @@ from .allocation import (
     backtest_staggered_trend_allocation,
 )
 from .data import data_window, utc_timestamp
+from .paths import output_path
 from .rotation import _rebalance_schedule
 
 
-DEFAULT_STRATEGY_PATH = Path("outputs/market_alpha_staggered/paper_strategy.json")
-DEFAULT_TRACKING_DIR = Path("outputs/forward_tracking")
+DEFAULT_STRATEGY_PATH = output_path("market_alpha_staggered", "paper_strategy.json")
+DEFAULT_TRACKING_DIR = output_path("forward_tracking")
 DEFAULT_STATE_PATH = DEFAULT_TRACKING_DIR / "market_alpha_staggered_state.json"
 EVENT_COLUMNS = [
     "timestamp",

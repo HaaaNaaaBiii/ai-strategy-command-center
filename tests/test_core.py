@@ -26,6 +26,7 @@ from smi_lab.data import (
 )
 from smi_lab.equity_data import fetch_yahoo_chart
 from smi_lab.evolution import _candidate_configs
+from smi_lab.external_research import attach_external_research, write_external_research_monitor
 from smi_lab.accounts import (
     ACCOUNT_COLUMNS,
     ORDER_COLUMNS,
@@ -51,6 +52,7 @@ from smi_lab.equity_strategy import (
 from smi_lab.equity_universe import equity_scan_symbols
 from smi_lab.market_info import cached_crypto_snapshots, fetch_equity_symbol_news
 from smi_lab.paper import aggregate_snapshot, allocation_snapshot, update_forward_tracking
+from smi_lab.paths import data_path, output_path, storage_root
 from smi_lab.position_planner import build_rebalance_plan
 from smi_lab.price_alerts import check_equity_price_alerts, format_alert_message, AlertEvent
 from smi_lab.regime import attach_btc_momentum_regime, attach_cboe_regime
@@ -633,6 +635,49 @@ class StrategyTests(unittest.TestCase):
         self.assertIn(summary.summary_action, {"Strong Buy", "Buy", "Neutral", "Sell", "Strong Sell"})
         self.assertGreater(summary.ma_buy, summary.ma_sell)
         self.assertTrue(summary.view)
+
+    def test_storage_paths_honor_env_root(self) -> None:
+        with TemporaryDirectory() as directory:
+            with patch.dict("os.environ", {"AI_STRATEGY_STORAGE_ROOT": directory}):
+                self.assertEqual(storage_root(), Path(directory))
+                self.assertEqual(data_path("investing"), Path(directory) / "data" / "investing")
+                self.assertEqual(output_path("external_research"), Path(directory) / "outputs" / "external_research")
+
+    def test_investing_research_attaches_to_selected_symbols(self) -> None:
+        recommendations = pd.DataFrame(
+            [
+                {"market": "tw", "symbol": "2330.TW", "company": "Taiwan Semiconductor"},
+                {"market": "tw", "symbol": "2317.TW", "company": "Hon Hai"},
+            ]
+        )
+        with TemporaryDirectory() as directory:
+            import_dir = Path(directory) / "investing"
+            output_dir = Path(directory) / "monitor"
+            import_dir.mkdir()
+            pd.DataFrame(
+                [
+                    {
+                        "symbol": "2330.TW",
+                        "rating": "Buy",
+                        "upside_pct": 12.5,
+                        "technical_summary": "Momentum positive",
+                        "url": "https://www.investing.com/equities/tsmc",
+                    }
+                ]
+            ).to_csv(import_dir / "sample.csv", index=False)
+
+            attached = attach_external_research(recommendations, "tw", import_dir=import_dir)
+            monitor = write_external_research_monitor(
+                recommendations,
+                "tw",
+                import_dir=import_dir,
+                output_dir=output_dir,
+            )
+
+        self.assertEqual(list(attached["symbol"]), ["2330.TW"])
+        self.assertEqual(attached.iloc[0]["market"], "tw")
+        self.assertEqual(attached.iloc[0]["source"], "investing.com")
+        self.assertEqual(list(monitor["symbol"]), ["2330.TW"])
 
     def test_allocation_snapshot_and_forward_tracking_initialize(self) -> None:
         universe = {"BTCUSDT": rising_frame(220), "ETHUSDT": rising_frame(220)}

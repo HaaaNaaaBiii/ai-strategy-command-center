@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import subprocess
 from pathlib import Path
 
@@ -11,14 +12,10 @@ PYTHON = ROOT / ".venv" / "Scripts" / "python.exe"
 def main() -> None:
     out_log = (ROOT / "streamlit.out.log").open("w", encoding="utf-8")
     err_log = (ROOT / "streamlit.err.log").open("w", encoding="utf-8")
-    creationflags = 0
-    if hasattr(subprocess, "DETACHED_PROCESS"):
-        creationflags |= subprocess.DETACHED_PROCESS
-    if hasattr(subprocess, "CREATE_NO_WINDOW"):
-        creationflags |= subprocess.CREATE_NO_WINDOW
-    if hasattr(subprocess, "CREATE_NEW_PROCESS_GROUP"):
-        creationflags |= subprocess.CREATE_NEW_PROCESS_GROUP
-    creationflags |= 0x01000000  # CREATE_BREAKAWAY_FROM_JOB
+    env = dict(os.environ)
+    if "PATH" not in env and "Path" in env:
+        env["PATH"] = env["Path"]
+    env["PYTHONUNBUFFERED"] = "1"
     process = subprocess.Popen(
         [
             str(PYTHON),
@@ -37,7 +34,7 @@ def main() -> None:
         stdin=subprocess.DEVNULL,
         stdout=out_log,
         stderr=err_log,
-        creationflags=creationflags,
+        env=env,
     )
     print(process.pid)
 

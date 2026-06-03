@@ -14,6 +14,7 @@ import pandas as pd
 from .data import cache_path
 from .equity_data import _cache_file
 from .equity_signals import company_name
+from .paths import data_path, output_path
 
 
 NEWS_FEEDS = {
@@ -128,7 +129,7 @@ def cached_equity_snapshots(
     market: str,
     interval: str = "1d",
     range_: str = "2y",
-    cache_dir: str | Path = "data/equities",
+    cache_dir: str | Path = data_path("equities"),
 ) -> pd.DataFrame:
     rows: list[dict[str, object]] = []
     label = "Taiwan" if market == "tw" else "U.S."
@@ -214,7 +215,7 @@ def _interleave_feed_items(feeds: tuple[str, ...], max_items: int) -> list[NewsI
 
 
 def fetch_market_news(
-    cache_path_: str | Path = "outputs/news/market_news.json",
+    cache_path_: str | Path = output_path("news", "market_news.json"),
     refresh: bool = False,
     max_items: int = 8,
     category: str = "us",
@@ -271,7 +272,7 @@ def fetch_equity_symbol_news(
     symbol: str,
     market: str,
     company: str | None = None,
-    cache_dir: str | Path = "outputs/news/equity_symbols",
+    cache_dir: str | Path = output_path("news", "equity_symbols"),
     refresh: bool = False,
     max_items: int = 4,
     cache_only: bool = False,

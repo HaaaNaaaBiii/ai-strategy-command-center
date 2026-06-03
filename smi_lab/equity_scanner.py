@@ -18,6 +18,7 @@ from .equity_strategy import (
     rank_equities,
 )
 from .equity_universe import equity_scan_symbols
+from .paths import data_path, output_path
 
 
 SCAN_COLUMNS = [
@@ -52,7 +53,7 @@ def load_equity_scan_universe(
     interval: str = "1d",
     range_: str = "2y",
     refresh: bool = False,
-    cache_dir: str | Path = "data/equities",
+    cache_dir: str | Path = data_path("equities"),
     request_pause: float = 0.35,
 ) -> tuple[dict[str, pd.DataFrame], pd.DataFrame]:
     source_symbols = symbols or list(equity_scan_symbols(market))
@@ -141,7 +142,7 @@ def run_equity_scan(
     range_: str = "2y",
     refresh: bool = False,
     top_n: int = 5,
-    output_dir: str | Path = "outputs/equity_scan",
+    output_dir: str | Path = output_path("equity_scan"),
     symbols: list[str] | None = None,
 ) -> dict[str, object]:
     output = Path(output_dir)

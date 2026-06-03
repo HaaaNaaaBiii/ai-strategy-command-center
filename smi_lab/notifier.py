@@ -6,10 +6,11 @@ from pathlib import Path
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
+from .paths import data_path
 from .strategy import Signal
 
 
-SECRET_DIR = Path("data/secrets")
+SECRET_DIR = data_path("secrets")
 DISCORD_WEBHOOK_SECRET_FILE = SECRET_DIR / "discord_webhook_url.txt"
 DISCORD_MENTION_SECRET_FILE = SECRET_DIR / "discord_mention.txt"
 

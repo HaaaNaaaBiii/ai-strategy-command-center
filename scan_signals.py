@@ -10,6 +10,7 @@ from smi_lab.config import StrategyConfig, load_config, load_portfolio
 from smi_lab.crypto_universe import crypto_scan_symbols, load_crypto_scan_universe
 from smi_lab.data import DEFAULT_SYMBOLS
 from smi_lab.notifier import format_signal, send_discord, send_telegram
+from smi_lab.paths import data_path, output_path
 from smi_lab.paper import (
     allocation_snapshot,
     format_allocation_report,
@@ -20,10 +21,10 @@ from smi_lab.regime import attach_btc_momentum_regime
 from smi_lab.strategy import Signal, latest_signal
 
 
-MATURITY_PORTFOLIO = Path("outputs/maturity_candidate/paper_portfolio.json")
-PRACTICAL_PORTFOLIO = Path("outputs/practical_candidate/paper_portfolio.json")
-RESEARCH_PORTFOLIO = Path("outputs/futures_regime/paper_portfolio.json")
-LEGACY_PORTFOLIO = Path("outputs/deployed_portfolio.json")
+MATURITY_PORTFOLIO = output_path("maturity_candidate", "paper_portfolio.json")
+PRACTICAL_PORTFOLIO = output_path("practical_candidate", "paper_portfolio.json")
+RESEARCH_PORTFOLIO = output_path("futures_regime", "paper_portfolio.json")
+LEGACY_PORTFOLIO = output_path("deployed_portfolio.json")
 DEFAULT_PORTFOLIO = (
     MATURITY_PORTFOLIO
     if MATURITY_PORTFOLIO.exists()
@@ -53,7 +54,7 @@ def parser() -> argparse.ArgumentParser:
     )
     command.add_argument("--interval", default="4h", choices=["15m", "1h", "4h", "1d"])
     command.add_argument("--bars", type=int, default=500)
-    command.add_argument("--config", default="outputs/best_strategy.json")
+    command.add_argument("--config", default=str(output_path("best_strategy.json")))
     command.add_argument("--portfolio", default=str(DEFAULT_PORTFOLIO))
     command.add_argument("--market", choices=["spot", "perpetual"], default=DEFAULT_MARKET)
     command.add_argument("--channel", choices=["none", "discord", "telegram"], default="none")
@@ -180,7 +181,7 @@ def send_message(channel: str, message: str) -> None:
 
 def main() -> None:
     args = parser().parse_args()
-    state_file = Path("data/notification_state.json")
+    state_file = data_path("notification_state.json")
     state = load_state(state_file)
     signals: list[tuple[str, float, Signal]] = []
     if args.strategy in {"smi", "both"}:

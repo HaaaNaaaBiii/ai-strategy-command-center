@@ -7,10 +7,12 @@ from pathlib import Path
 import pandas as pd
 
 from smi_lab.equity_scanner import run_equity_scan
+from smi_lab.external_research import write_external_research_monitor
 from smi_lab.notifier import resolve_discord_mention, send_discord
+from smi_lab.paths import output_path
 
 
-OUTPUT_DIR = Path("outputs/equity_scan")
+OUTPUT_DIR = output_path("equity_scan")
 
 
 def _read_json_list(path: Path) -> list[dict[str, object]]:
@@ -128,6 +130,7 @@ def main() -> None:
         if path.exists():
             frame = pd.read_csv(path)
             if not frame.empty:
+                write_external_research_monitor(frame, market)
                 frame.insert(1, "market", market)
                 recommendation_frames.append(frame)
         print(f"[{market}] {summary['status']} | loaded={summary['loaded_symbols']} failed={summary['failed_symbols']}")

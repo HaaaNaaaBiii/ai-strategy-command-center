@@ -10,6 +10,7 @@ import pandas as pd
 from .equity_data import fetch_yahoo_chart
 from .equity_live import strategy_recommendations_for_market
 from .notifier import resolve_discord_mention, send_discord
+from .paths import data_path, output_path
 
 
 LEVEL_COLUMNS = {
@@ -69,7 +70,7 @@ def _latest_price(symbol: str, market: str, refresh: bool = True) -> tuple[float
             interval="1m",
             range_="1d",
             refresh=refresh,
-            cache_dir="data/alert_prices",
+            cache_dir=data_path("alert_prices"),
         )
     except Exception:
         frame = fetch_yahoo_chart(
@@ -77,7 +78,7 @@ def _latest_price(symbol: str, market: str, refresh: bool = True) -> tuple[float
             interval="1d",
             range_="5d",
             refresh=refresh,
-            cache_dir="data/alert_prices",
+            cache_dir=data_path("alert_prices"),
         )
     latest = frame.dropna(subset=["high", "low", "close"]).iloc[-1]
     return float(latest["close"]), float(latest["high"]), float(latest["low"])
@@ -103,8 +104,8 @@ def format_alert_message(event: AlertEvent, mention: str = "") -> str:
 
 
 def check_equity_price_alerts(
-    recommendations_path: str | Path = "outputs/equity_scan/latest_recommendations.csv",
-    state_path: str | Path = "outputs/alerts/equity_price_alerts_state.json",
+    recommendations_path: str | Path = output_path("equity_scan", "latest_recommendations.csv"),
+    state_path: str | Path = output_path("alerts", "equity_price_alerts_state.json"),
     webhook_url: str | None = None,
     mention: str | None = None,
     refresh: bool = True,

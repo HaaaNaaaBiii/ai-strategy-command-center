@@ -49,6 +49,47 @@ Dashboard news uses RSS feeds with a local cache. If all feeds are temporarily u
 
 Selected stock news is shown for daily Taiwan/U.S. scan picks on the Dashboard and Stocks page. It uses per-symbol RSS caches under `outputs/news/equity_symbols/`; clicking refresh fetches Yahoo Finance and Google News results for each selected symbol. This news layer is informational only and does not alter strategy scores, target weights, or order plans.
 
+## Local Storage Root
+
+Generated market data, scan outputs, account imports, Discord secrets, and research artifacts can be stored outside the Git workspace. The app reads `storage.local.json` first, then `AI_STRATEGY_STORAGE_ROOT` or `SMI_LAB_STORAGE_DIR`, and falls back to the project folder only when no local storage root is configured.
+
+The current local target is:
+
+```text
+E:\AI_Strategy_Command_Center
+```
+
+Run the migration helper from the project folder:
+
+```powershell
+.\.venv\Scripts\python.exe migrate_storage.py --target E:\AI_Strategy_Command_Center
+```
+
+This copies local `data/` and `outputs/` into the target and writes a Git-ignored `storage.local.json`. It does not delete the original C-drive folders unless `--move` is passed intentionally. Keep the C-drive copy as a backup until the app and scheduled scans are verified against E-drive storage.
+
+## Investing.com Research Monitor
+
+If Investing.com is subscribed, the practical integration should start from exportable or user-authorized data rather than scraping a logged-in subscription page. Place curated CSV exports under:
+
+```text
+E:\AI_Strategy_Command_Center\data\investing\
+```
+
+Supported columns are:
+
+```text
+market,symbol,company,source,as_of,rating,fair_value,analyst_target,upside_pct,technical_summary,fundamental_summary,risk_summary,notes,url
+```
+
+Only `symbol` is required. `market` can be `tw`, `us`, or blank; blank rows are matched to the current scan market when the symbol matches. After each Taiwan or U.S. scan, the app writes selected-symbol research monitors to:
+
+```text
+E:\AI_Strategy_Command_Center\outputs\external_research\tw_investing_monitor.csv
+E:\AI_Strategy_Command_Center\outputs\external_research\us_investing_monitor.csv
+```
+
+These files are exposed in the Records page. The next production step is to automate the source feed if the subscription provides a permitted export, alert email, API, or browser-assisted capture flow.
+
 ## Non-Financial Attention Strategy
 
 The `Attention` page is a separate research sleeve for early attention signals. It looks for product, brand, search, and social discussion spikes that may precede earnings narratives. The first implementation uses GDELT DOC 2.0 timeline data as a no-key historical proxy, falls back to Wikimedia Pageviews when GDELT is rate-limited, and excludes finance-related terms from keyword queries.
