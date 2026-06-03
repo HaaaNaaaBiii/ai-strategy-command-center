@@ -78,7 +78,7 @@ Gate / Benchmark：`0050.TW`。
 
 ### 頻率
 
-台灣時間週一到週五 13:35，收盤後掃描。
+台灣時間週一到週五 08:45、11:30、14:10 掃描。盤前與盤中為觀察，盤後為正式日線策略更新。
 
 不使用每小時掃盤作為正式策略輸出，因為目前策略是 daily bar 回測。
 
@@ -116,12 +116,12 @@ Gate / Benchmark：`SPY`。
 
 ### 頻率
 
-台灣時間週二到週六 07:30，美股收盤後掃描。
+台灣時間週一到週五 21:00 掃描美股盤前；週二到週六 01:00 掃描盤中；週二到週六 05:30 掃描盤後。
 
 ### 手動命令
 
 ```powershell
-.\.venv\Scripts\python.exe scan_equity_signals.py --market us --interval 1d --range 2y --refresh
+.\.venv\Scripts\python.exe scan_equity_signals.py --market us --interval 1d --range 2y --refresh --channel discord
 ```
 
 ### 主要輸出

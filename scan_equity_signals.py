@@ -37,6 +37,12 @@ def parser() -> argparse.ArgumentParser:
     command.add_argument("--channel", choices=["none", "discord"], default="none")
     command.add_argument("--webhook-url", default="")
     command.add_argument("--mention", default=resolve_discord_mention())
+    command.add_argument(
+        "--session",
+        default="",
+        choices=["", "premarket", "intraday", "postclose"],
+        help="Optional scan session label for notifications.",
+    )
     return command
 
 
@@ -53,13 +59,21 @@ def _format_equity_scan_message(
     summaries: list[dict[str, object]],
     recommendations: pd.DataFrame,
     mention: str = "",
+    session: str = "",
 ) -> str:
     market_names = {"tw": "台股", "us": "美股"}
+    session_names = {
+        "premarket": "盤前觀察",
+        "intraday": "盤中觀察",
+        "postclose": "盤後正式更新",
+    }
     markets = [str(item.get("market", "")).lower() for item in summaries]
     title_market = " / ".join(market_names.get(market, market.upper()) for market in markets if market)
     title_market = title_market or "股票"
+    session_label = session_names.get(session, "")
+    title = f"{title_market}{session_label}策略選股" if session_label else f"{title_market}今日策略選股"
     lines = [
-        f"{mention + ' ' if mention else ''}{title_market}今日策略選股",
+        f"{mention + ' ' if mention else ''}{title}",
         "資料基準：最新可取得日線資料；策略為輪動/再平衡，不含未回測的進出場價位層。",
     ]
     for summary in summaries:
@@ -145,7 +159,12 @@ def main() -> None:
         latest_recommendations = pd.DataFrame()
         pd.DataFrame().to_csv(latest_recommendations_path, index=False)
     if args.channel == "discord":
-        message = _format_equity_scan_message(summaries, latest_recommendations, mention=args.mention)
+        message = _format_equity_scan_message(
+            summaries,
+            latest_recommendations,
+            mention=args.mention,
+            session=args.session,
+        )
         send_discord(message, webhook_url=args.webhook_url or None)
 
 

@@ -119,11 +119,19 @@ Use `--crypto-universe core` to force the old BTC/ETH/DOGE/SOL universe, or `--c
 
 Active Codex automations:
 
-- `Taiwan daily equity scan`: every weekday at 09:15 Taiwan time, sends the latest Taiwan strategy picks to Discord using the configured mention.
-- `U.S. daily equity scan`: Tuesday through Saturday at 07:30 Taiwan time, after the prior U.S. session closes.
+- Taiwan equity scans: weekdays at 08:45, 11:30, and 14:10 Taiwan time. Premarket and intraday are observation scans; post-close is the official daily strategy update.
+- U.S. equity scans: 21:00 Taiwan time on U.S. trading nights, then 01:00 and 05:30 Taiwan time on the following Taiwan calendar day. Premarket and intraday are observation scans; post-close is the official daily strategy update.
 - `Crypto 4h allocation scan`: every 4 hours, matching the crypto allocation strategy candle interval.
 
-Stock scans are intentionally not hourly. Taiwan and U.S. strategies use daily bars, so official strategy recommendations should be based on post-close data. Intraday observations can be shown in the app, but they should not update Live Desk order intents unless a separate intraday strategy is designed and backtested.
+Stock scans are intentionally limited to premarket, intraday, and post-close checkpoints. Taiwan and U.S. strategies use daily bars, so official strategy recommendations should be based on post-close data. Intraday observations can be sent to Discord for risk awareness, but they should not update Live Desk order intents unless a separate intraday strategy is designed and backtested.
+
+Small live equity usage rule:
+
+- Treat post-close recommendations as the source of truth for new orders.
+- Use premarket and intraday scans only to confirm whether the selected sleeve is still stable or whether a risk-off/cash state has appeared.
+- Start with a canary sleeve, for example 5-10% of the intended strategy capital.
+- Hold the selected Top 3 names at equal target weights unless the strategy configuration changes.
+- Rebalance only when the selected symbols or target weights change materially; avoid reacting to every observation scan.
 
 The latest equity optimization selected Top 3 sleeves for both markets. Taiwan uses 40/60-day momentum with 40-day rebalance, EMA200 trend, and 0050.TW as the gate. U.S. uses 63/126-day momentum with 40-day rebalance and SPY as the gate. The latest two-year broad-universe backtests were:
 

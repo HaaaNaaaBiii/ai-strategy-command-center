@@ -924,10 +924,15 @@ class StrategyTests(unittest.TestCase):
             ]
         )
 
-        message = _format_equity_scan_message(summaries, recommendations, mention="<@123>")
+        message = _format_equity_scan_message(
+            summaries,
+            recommendations,
+            mention="<@123>",
+            session="intraday",
+        )
 
         self.assertIn("<@123>", message)
-        self.assertIn("台股今日策略選股", message)
+        self.assertIn("台股盤中觀察策略選股", message)
         self.assertIn("2330.TW", message)
         self.assertIn("ref 1,000.00", message)
         self.assertNotIn("TP", message)
