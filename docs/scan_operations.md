@@ -85,7 +85,7 @@ Gate / Benchmark：`0050.TW`。
 ### 手動命令
 
 ```powershell
-.\.venv\Scripts\python.exe scan_equity_signals.py --market tw --interval 1d --range 2y --refresh
+.\.venv\Scripts\python.exe scan_equity_signals.py --market tw --interval 1d --range 2y --refresh --channel discord
 ```
 
 ### 主要輸出

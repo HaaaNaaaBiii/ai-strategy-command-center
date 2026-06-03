@@ -9,6 +9,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
+from scan_equity_signals import _format_equity_scan_message
 from smi_lab.backtest import backtest, backtest_portfolio, backtest_ranked_long
 from smi_lab.allocation import (
     TrendAllocationConfig,
@@ -899,6 +900,39 @@ class StrategyTests(unittest.TestCase):
         self.assertGreater(len(equity_scan_symbols("us")), 140)
         self.assertIn("3661.TW", equity_scan_symbols("tw"))
         self.assertIn("PANW", equity_scan_symbols("us"))
+
+    def test_equity_scan_discord_message_uses_rebalance_language(self) -> None:
+        summaries = [
+            {
+                "market": "tw",
+                "loaded_symbols": 135,
+                "failed_symbols": 2,
+                "recommended_symbols": ["2330.TW"],
+            }
+        ]
+        recommendations = pd.DataFrame(
+            [
+                {
+                    "market": "tw",
+                    "symbol": "2330.TW",
+                    "company": "Taiwan Semiconductor",
+                    "rank": 1,
+                    "score": 88.1234,
+                    "reference_price": 1000.0,
+                    "reason": "Selected inside Top 3: rank 1, score 88.12.",
+                }
+            ]
+        )
+
+        message = _format_equity_scan_message(summaries, recommendations, mention="<@123>")
+
+        self.assertIn("<@123>", message)
+        self.assertIn("台股今日策略選股", message)
+        self.assertIn("2330.TW", message)
+        self.assertIn("ref 1,000.00", message)
+        self.assertNotIn("TP", message)
+        self.assertNotIn("stop", message.lower())
+        self.assertNotIn("RR", message)
 
     def test_equity_reason_explains_volatility_filter(self) -> None:
         reason = explain_equity_selection_reason(

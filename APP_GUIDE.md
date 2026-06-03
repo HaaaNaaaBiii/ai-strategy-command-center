@@ -119,7 +119,7 @@ Use `--crypto-universe core` to force the old BTC/ETH/DOGE/SOL universe, or `--c
 
 Active Codex automations:
 
-- `Taiwan daily equity scan`: every weekday at 13:35 Taiwan time, after the Taiwan stock market close.
+- `Taiwan daily equity scan`: every weekday at 09:15 Taiwan time, sends the latest Taiwan strategy picks to Discord using the configured mention.
 - `U.S. daily equity scan`: Tuesday through Saturday at 07:30 Taiwan time, after the prior U.S. session closes.
 - `Crypto 4h allocation scan`: every 4 hours, matching the crypto allocation strategy candle interval.
 
