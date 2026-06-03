@@ -76,6 +76,7 @@ MARKET_ALPHA_DIR = OUTPUT_DIR / "market_alpha_staggered"
 TRACKING_DIR = OUTPUT_DIR / "forward_tracking"
 EQUITY_SELECTION_DIR = OUTPUT_DIR / "equity_selection"
 EQUITY_SCAN_DIR = OUTPUT_DIR / "equity_scan"
+ATTENTION_DIR = OUTPUT_DIR / "attention_strategy"
 ACCOUNT_DIR = OUTPUT_DIR / "accounts"
 ACCOUNTS_FILE = ACCOUNT_DIR / "accounts.csv"
 POSITIONS_FILE = ACCOUNT_DIR / "positions.csv"
@@ -101,6 +102,7 @@ I18N = {
         "dashboard": "\u5100\u8868\u677f",
         "crypto": "\u52a0\u5bc6\u8ca8\u5e63",
         "stocks": "\u80a1\u7968",
+        "attention": "\u6ce8\u610f\u529b\u7b56\u7565",
         "live_desk": "\u5be6\u76e4\u7b56\u7565",
         "accounts": "\u5e33\u6236",
         "research": "\u7814\u7a76",
@@ -123,6 +125,8 @@ I18N = {
         "news_us": "\u7f8e\u80a1",
         "stocks_title": "\u53f0\u80a1 / \u7f8e\u80a1\u7b56\u7565",
         "stocks_subtitle": "\u4f9d\u53f0\u7f8e\u80a1\u5e02\u5834\u898f\u5247\u8abf\u6574\u7684\u6383\u76e4\u3001\u52d5\u80fd\u6392\u540d\u3001\u8f2a\u52d5\u518d\u5e73\u8861\u8207\u7b56\u7565\u5716\u8868\u3002",
+        "attention_title": "\u975e\u8ca1\u7d93\u6ce8\u610f\u529b\u7b56\u7565",
+        "attention_subtitle": "\u4ee5\u65b0\u805e\u3001\u95dc\u9375\u5b57\u3001\u641c\u5c0b\u8207\u793e\u7fa4\u8a0e\u8ad6\u4f5c\u70ba\u9810\u6e2c\u8ca1\u5831\u524d\u7684\u65e9\u671f\u8a0a\u865f\u3002\u76ee\u524d\u70ba\u7814\u7a76\u9801\uff0c\u4e0d\u9032\u5165\u5be6\u76e4\u4e0b\u55ae\u3002",
         "latest_scan": "\u6700\u65b0\u7b56\u7565\u6383\u76e4",
     },
     "en": {
@@ -133,6 +137,7 @@ I18N = {
         "dashboard": "Dashboard",
         "crypto": "Crypto",
         "stocks": "Stocks",
+        "attention": "Attention",
         "live_desk": "Live Desk",
         "accounts": "Accounts",
         "research": "Research",
@@ -155,6 +160,8 @@ I18N = {
         "news_us": "U.S. Stocks",
         "stocks_title": "Taiwan / U.S. Stock Strategy",
         "stocks_subtitle": "Market-adjusted scans, momentum ranking, rotation rebalancing, and strategy charts.",
+        "attention_title": "Non-Financial Attention Strategy",
+        "attention_subtitle": "Uses news, keywords, search, and social attention as early signals before financial news. Research-only, not live execution.",
         "latest_scan": "Latest Strategy Scan",
     },
 }
@@ -535,6 +542,76 @@ def plot_rebalance_plan(plan: pd.DataFrame) -> go.Figure:
         template="plotly_dark",
         height=340,
         margin=dict(l=10, r=10, t=45, b=10),
+    )
+    return fig
+
+
+def plot_attention_ranking(frame: pd.DataFrame, title: str) -> go.Figure:
+    data = frame.copy().head(12)
+    if data.empty:
+        data = pd.DataFrame({"symbol": [], "attention_score": [], "company": []})
+    if "company" not in data:
+        data["company"] = data.get("symbol", pd.Series(dtype=object)).map(company_name)
+    labels = [f"{row.symbol} | {row.company}" for row in data.itertuples()]
+    scores = pd.to_numeric(data.get("attention_score", 0.0), errors="coerce").fillna(0.0)
+    selected = data.get("selected", pd.Series(False, index=data.index)).astype(str).str.lower().isin({"true", "1", "yes"})
+    eligible = data.get("eligible", pd.Series(False, index=data.index)).astype(str).str.lower().isin({"true", "1", "yes"})
+    colors = [
+        "#22c55e" if is_selected else "#f59e0b" if is_eligible else "#64748b"
+        for is_selected, is_eligible in zip(selected, eligible, strict=False)
+    ]
+    fig = go.Figure(
+        go.Bar(
+            x=scores,
+            y=labels,
+            orientation="h",
+            marker_color=colors,
+            text=scores.round(2),
+            textposition="auto",
+        )
+    )
+    fig.update_layout(
+        title=title,
+        template="plotly_dark",
+        height=380,
+        margin=dict(l=10, r=10, t=45, b=10),
+        yaxis=dict(autorange="reversed"),
+    )
+    return fig
+
+
+def plot_indexed_curves(frame: pd.DataFrame, title: str) -> go.Figure:
+    data = frame.copy()
+    fig = go.Figure()
+    if not data.empty:
+        if "Unnamed: 0" in data:
+            data = data.rename(columns={"Unnamed: 0": "timestamp"})
+        if "timestamp" in data:
+            data["timestamp"] = pd.to_datetime(data["timestamp"], utc=True, errors="coerce")
+            data = data.dropna(subset=["timestamp"]).set_index("timestamp")
+        numeric = data.apply(pd.to_numeric, errors="coerce").dropna(how="all")
+        if not numeric.empty:
+            normalized = pd.DataFrame(index=numeric.index)
+            for column in numeric.columns:
+                series = numeric[column].dropna()
+                if series.empty or float(series.iloc[0]) == 0.0:
+                    continue
+                normalized[column] = numeric[column] / float(series.iloc[0]) * 100.0
+            for column in normalized.columns:
+                fig.add_trace(
+                    go.Scatter(
+                        x=normalized.index,
+                        y=normalized[column],
+                        mode="lines",
+                        name=str(column),
+                    )
+                )
+    fig.update_layout(
+        title=title,
+        template="plotly_dark",
+        height=340,
+        margin=dict(l=10, r=10, t=45, b=10),
+        yaxis_title="Indexed equity",
     )
     return fig
 
@@ -1018,6 +1095,7 @@ NAV_OPTIONS = [
     "Dashboard",
     "Crypto",
     "Stocks",
+    "Attention",
     "Live Desk",
     "Accounts",
     "Research",
@@ -1033,6 +1111,7 @@ NAV_LABELS = {
     "Dashboard": tr("dashboard"),
     "Crypto": tr("crypto"),
     "Stocks": tr("stocks"),
+    "Attention": tr("attention"),
     "Live Desk": tr("live_desk"),
     "Accounts": tr("accounts"),
     "Research": tr("research"),
@@ -1541,6 +1620,133 @@ elif page == "Stocks":
     with us_tab:
         render_equity_page("U.S. Stocks", "us", equity_scan_symbols("us"))
 
+elif page == "Attention":
+    hero(
+        tr("attention_title"),
+        tr("attention_subtitle"),
+    )
+    report = read_json_or_empty(ATTENTION_DIR / "attention_report.json")
+    metrics = read_csv_or_empty(ATTENTION_DIR / "attention_metrics.csv")
+    latest = read_csv_or_empty(ATTENTION_DIR / "latest_attention_candidates.csv")
+    equity = read_csv_or_empty(ATTENTION_DIR / "attention_equity.csv")
+    rebalances = read_csv_or_empty(ATTENTION_DIR / "attention_rebalances.csv")
+    failures = read_csv_or_empty(ATTENTION_DIR / "attention_failures.csv")
+    config_search = read_csv_or_empty(ATTENTION_DIR / "attention_config_search.csv")
+
+    st.info(
+        "Research-only strategy: it searches for non-financial attention spikes before earnings narratives become financial news. "
+        "Live trading remains disabled until better social/search history and forward tracking are available."
+    )
+    if not report:
+        st.warning("No attention research output found yet. Run the backtest command below, then refresh this page.")
+        st.code(".\\.venv\\Scripts\\python.exe research_attention_strategy.py --range 2y --refresh")
+    else:
+        strategy_row = (
+            metrics[metrics["strategy"] == "attention_strategy"].head(1).to_dict("records")[0]
+            if not metrics.empty and "strategy" in metrics.columns and not metrics[metrics["strategy"] == "attention_strategy"].empty
+            else {}
+        )
+        benchmark_row = (
+            metrics[metrics["strategy"] == "SPY"].head(1).to_dict("records")[0]
+            if not metrics.empty and "strategy" in metrics.columns and not metrics[metrics["strategy"] == "SPY"].empty
+            else {}
+        )
+        metric_cols = st.columns(5)
+        metric_cols[0].metric("Status", str(report.get("live_status", "research_only")))
+        metric_cols[1].metric("Return", pct(strategy_row.get("return_pct")))
+        metric_cols[2].metric("SPY", pct(benchmark_row.get("return_pct")))
+        metric_cols[3].metric("Excess", pct(report.get("metrics", {}).get("excess_return_pct") if isinstance(report.get("metrics"), dict) else None))
+        metric_cols[4].metric("Usable Symbols", len(report.get("usable_symbols", [])))
+        if report.get("config_selection"):
+            st.caption(f"Config selection: {report.get('config_selection')} | Config: {report.get('config', {})}")
+        st.caption(f"Generated: {report.get('generated_at', '-')} | Source: {report.get('data_source', '-')}")
+
+    chart_left, chart_right = st.columns([1.2, 1.0])
+    with chart_left:
+        st.plotly_chart(plot_indexed_curves(equity, "Attention Strategy vs SPY"), width="stretch")
+    with chart_right:
+        st.plotly_chart(plot_attention_ranking(latest, "Latest Attention Candidates"), width="stretch")
+
+    st.subheader("Latest Candidates")
+    if latest.empty:
+        st.info("No latest attention candidates yet.")
+    else:
+        display_columns = [
+            "date",
+            "symbol",
+            "company",
+            "category",
+            "selected",
+            "eligible",
+            "recent_mentions",
+            "baseline_mentions",
+            "spike_z",
+            "attention_growth_pct",
+            "attention_score",
+        ]
+        view = latest[[column for column in display_columns if column in latest.columns]].copy()
+        for column in ["recent_mentions", "baseline_mentions", "spike_z", "attention_growth_pct", "attention_score"]:
+            if column in view:
+                view[column] = pd.to_numeric(view[column], errors="coerce").round(2)
+        st.dataframe(view, hide_index=True, width="stretch")
+
+    explain_tab, config_tab, rebalance_tab, data_tab = st.tabs(["Strategy Logic", "Config Search", "Rebalances", "Data Health"])
+    with explain_tab:
+        st.markdown(
+            """
+            **Signal definition**
+
+            - Universe: U.S. consumer, beauty, apparel, media, and digital names where social/search attention can plausibly lead sales.
+            - Source now: GDELT non-financial web/news attention with finance terms excluded, plus optional CSV imports in `data/attention_sources/`.
+            - Feature: 7-day mention volume compared with the prior 60-day baseline.
+            - Selection: every 5 trading days, buy the selected TopN attention-score names when mention count and spike-z thresholds are met; otherwise stay in cash.
+            - Execution assumption: prior-day attention signal enters at next market open with fee/slippage costs.
+            """
+        )
+        st.warning(
+            "This is not yet a production strategy. Real YouTube, Reddit, TikTok, Google Trends, and web-search history need API or vendor data before position sizing."
+        )
+    with config_tab:
+        if config_search.empty:
+            st.info("No parameter-search output yet.")
+        else:
+            search_view = config_search.head(20).copy()
+            numeric_columns = [
+                "return_pct",
+                "spy_return_pct",
+                "excess_return_pct",
+                "sharpe",
+                "max_drawdown_pct",
+                "selection_score",
+            ]
+            for column in numeric_columns:
+                if column in search_view:
+                    search_view[column] = pd.to_numeric(search_view[column], errors="coerce").round(2)
+            st.dataframe(search_view, hide_index=True, width="stretch")
+    with rebalance_tab:
+        if rebalances.empty:
+            st.info("No rebalance records yet.")
+        else:
+            st.dataframe(rebalances, hide_index=True, width="stretch")
+    with data_tab:
+        if failures.empty:
+            st.success("No recorded data failures in the latest run.")
+        else:
+            st.dataframe(failures, hide_index=True, width="stretch")
+        with st.expander("Generated attention files"):
+            for path in [
+                ATTENTION_DIR / "attention_report.json",
+                ATTENTION_DIR / "attention_metrics.csv",
+                ATTENTION_DIR / "attention_config_search.csv",
+                ATTENTION_DIR / "latest_attention_candidates.csv",
+                ATTENTION_DIR / "attention_equity.csv",
+                ATTENTION_DIR / "attention_rebalances.csv",
+                ATTENTION_DIR / "attention_failures.csv",
+                ATTENTION_DIR / "attention_timeline.csv",
+                ATTENTION_DIR / "attention_features.csv",
+            ]:
+                st.caption(str(path))
+
 elif page == "Live Desk":
     hero(
         "Strategy Live Desk",
@@ -1914,6 +2120,7 @@ elif page == "Research":
         - Crypto: still in paper-forward mode. It needs at least 30 forward days, more rebalance events, real slippage checks, and Pionex canary limits before funded execution.
         - Taiwan stocks: current two-year test beats 0050.TW, but the universe is too narrow. Next optimization is liquidity filters, sector caps, and broader stock coverage.
         - U.S. stocks: current two-year test beats SPY, but it is concentrated in mega-cap momentum. Next optimization is sector caps, earnings blackout rules, and QQQ/SPY dual benchmark validation.
+        - Attention: current two-year proxy-data test beats SPY, but it remains research-only until real social/search history and forward tracking are connected.
         - All markets: walk-forward and out-of-sample testing are required before increasing capital.
         """
     )
@@ -1921,6 +2128,9 @@ elif page == "Research":
         MARKET_ALPHA_DIR / "selected_metrics.csv",
         EQUITY_SELECTION_DIR / "tw_metrics.csv",
         EQUITY_SELECTION_DIR / "us_metrics.csv",
+        ATTENTION_DIR / "attention_metrics.csv",
+        ATTENTION_DIR / "attention_config_search.csv",
+        ATTENTION_DIR / "latest_attention_candidates.csv",
         TRACKING_DIR / "market_alpha_staggered_forward_benchmarks.csv",
     ]
     tw_metrics = read_csv_or_empty(EQUITY_SELECTION_DIR / "tw_metrics.csv")
@@ -1982,6 +2192,13 @@ elif page == "Records":
         EQUITY_SCAN_DIR / "us_recommendations.csv",
         EQUITY_SCAN_DIR / "us_scan_metrics.csv",
         EQUITY_SCAN_DIR / "us_scan_failures.csv",
+        ATTENTION_DIR / "attention_report.json",
+        ATTENTION_DIR / "attention_metrics.csv",
+        ATTENTION_DIR / "attention_config_search.csv",
+        ATTENTION_DIR / "latest_attention_candidates.csv",
+        ATTENTION_DIR / "attention_rebalances.csv",
+        ATTENTION_DIR / "attention_equity.csv",
+        ATTENTION_DIR / "attention_failures.csv",
         OUTPUT_DIR / "equity_optimization" / "latest_optimization_report.json",
         OUTPUT_DIR / "equity_optimization" / "tw_top_candidates.csv",
         OUTPUT_DIR / "equity_optimization" / "us_top_candidates.csv",

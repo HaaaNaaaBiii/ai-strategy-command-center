@@ -7,12 +7,14 @@ Project entrypoint:
 - `PROJECT.md`: consolidated project brief, current strategy state, live boundaries, and next steps.
 - `docs/scan_operations.md`: crypto/Taiwan/U.S. scan rules, schedules, commands, outputs, and notification rules.
 - `docs/equity_strategy_review.md`: equity strategy review, backtest status, and live execution boundary.
+- `docs/attention_strategy.md`: non-financial attention strategy design, data sources, backtest command, and production boundary.
 
 ## What This App Provides
 
 - Dashboard: market snapshot, news, crypto live-readiness, and tracked account/position status.
 - Crypto: signal center, forward paper tracking, allocation chart, candlestick strategy chart, and notification controls.
 - Stocks: Taiwan and U.S. strategy ranking charts, company names, selectable candlestick charts, rotation/rebalance signals, and benchmark comparison.
+- Attention: separate research page for non-financial news, keyword, search, and social-attention signals.
 - Live Desk: strategy-controlled crypto, U.S. 10,000 USD, and Taiwan 300,000 TWD sleeves that generate live rebalance intents from the current backtested strategy.
 - Accounts: Pionex crypto account tracking, Cathay Securities Taiwan stock tracking, Firstrade U.S. stock tracking, position records, and order tracking.
 - Research: current optimization stance and generated research files.
@@ -46,6 +48,27 @@ Equity data first uses Yahoo Finance chart data. If Yahoo rate-limits with HTTP 
 Dashboard news uses RSS feeds with a local cache. If all feeds are temporarily unavailable, the app keeps the page alive and shows the latest cached items when present.
 
 Selected stock news is shown for daily Taiwan/U.S. scan picks on the Dashboard and Stocks page. It uses per-symbol RSS caches under `outputs/news/equity_symbols/`; clicking refresh fetches Yahoo Finance and Google News results for each selected symbol. This news layer is informational only and does not alter strategy scores, target weights, or order plans.
+
+## Non-Financial Attention Strategy
+
+The `Attention` page is a separate research sleeve for early attention signals. It looks for product, brand, search, and social discussion spikes that may precede earnings narratives. The first implementation uses GDELT DOC 2.0 timeline data as a no-key historical proxy, falls back to Wikimedia Pageviews when GDELT is rate-limited, and excludes finance-related terms from keyword queries.
+
+Run manually:
+
+```powershell
+.\.venv\Scripts\python.exe research_attention_strategy.py --range 2y --refresh
+```
+
+The current selected research config uses Top 5, 5-trading-day rebalance, 7-day recent attention, 60-day baseline, and minimum spike z-score 1.5. It can hold cash when no symbol passes the thresholds. Outputs are written to `outputs/attention_strategy/` and are shown in the `Attention`, `Research`, and `Records` pages.
+
+Latest 2-year proxy-data backtest generated on 2026-06-03:
+
+- Attention strategy: `+80.57%`.
+- SPY aligned benchmark: `+38.32%`.
+- Excess return: `+42.25%`.
+- Max drawdown: strategy `-18.55%`, SPY `-19.00%`.
+
+This sleeve is research-only until stronger historical YouTube, Reddit, TikTok, Google Trends, or vendor search-volume data is connected and forward paper tracking confirms the signal.
 
 ## Broker Holding Tracking Plan
 

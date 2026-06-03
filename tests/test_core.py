@@ -36,6 +36,7 @@ from smi_lab.accounts import (
 )
 from smi_lab.broker_import import normalize_broker_positions, sync_broker_exports
 from smi_lab.crypto_universe import crypto_scan_symbols, load_crypto_scan_universe
+from smi_lab.attention_strategy import AttentionConfig, attention_features, backtest_attention_strategy
 from smi_lab.equity_live import build_equity_live_order_plan, load_live_strategy_memory, remember_live_plan
 from smi_lab.equity_signals import add_company_names, build_equity_trade_plan, explain_equity_selection_reason
 from smi_lab.equity_scanner import build_scan_recommendations
@@ -698,6 +699,90 @@ class StrategyTests(unittest.TestCase):
         self.assertEqual(ranking.iloc[0]["symbol"], "STRONG")
         self.assertGreater(result.metrics["return_pct"], benchmark.metrics["return_pct"])
         self.assertFalse(result.rebalances.empty)
+
+    def test_attention_features_detect_nonfinancial_attention_spike(self) -> None:
+        dates = pd.date_range("2025-01-01", periods=120, freq="1D", tz="UTC")
+        mentions = (1.0 + (np.arange(len(dates)) % 3)).astype(float)
+        mentions[-7:] = 18.0
+        attention = pd.DataFrame(
+            {
+                "date": dates,
+                "symbol": "ELF",
+                "company": "e.l.f. Beauty",
+                "category": "beauty",
+                "source": "test",
+                "mentions": mentions,
+                "norm": np.nan,
+            }
+        )
+        config = AttentionConfig(
+            spike_lookback_days=30,
+            recent_days=7,
+            min_recent_mentions=3.0,
+            min_spike_z=1.0,
+        )
+
+        features = attention_features(attention, config)
+        latest = features[features["symbol"] == "ELF"].iloc[-1]
+
+        self.assertGreater(float(latest["recent_mentions"]), 100.0)
+        self.assertGreater(float(latest["spike_z"]), 1.0)
+        self.assertGreater(float(latest["attention_score"]), 1.0)
+
+    def test_attention_backtest_rotates_into_prior_day_top_signal(self) -> None:
+        index = pd.date_range("2025-01-01", periods=80, freq="1D", tz="UTC")
+
+        def daily_frame(values: np.ndarray) -> pd.DataFrame:
+            series = pd.Series(values, index=index)
+            return pd.DataFrame(
+                {
+                    "open": series,
+                    "high": series + 1.0,
+                    "low": series - 1.0,
+                    "close": series,
+                    "volume": 1000.0,
+                },
+                index=index,
+            )
+
+        universe = {
+            "SPY": daily_frame(np.linspace(100, 100, len(index))),
+            "ELF": daily_frame(np.linspace(100, 150, len(index))),
+            "ULTA": daily_frame(np.linspace(100, 95, len(index))),
+        }
+        features = pd.DataFrame(
+            [
+                {
+                    "date": date,
+                    "symbol": symbol,
+                    "company": "e.l.f. Beauty" if symbol == "ELF" else "Ulta Beauty",
+                    "category": "beauty",
+                    "recent_mentions": 25.0 if symbol == "ELF" else 2.0,
+                    "baseline_mentions": 5.0,
+                    "spike_z": 3.0 if symbol == "ELF" else 0.2,
+                    "attention_growth_pct": 400.0 if symbol == "ELF" else 0.0,
+                    "attention_score": 4.4 if symbol == "ELF" else 0.2,
+                }
+                for date in index
+                for symbol in ["ELF", "ULTA"]
+            ]
+        )
+        config = AttentionConfig(
+            top_n=1,
+            rebalance_days=5,
+            spike_lookback_days=10,
+            recent_days=3,
+            min_recent_mentions=3.0,
+            min_spike_z=1.0,
+            fee_bps=0.0,
+            slippage_bps=0.0,
+        )
+
+        result = backtest_attention_strategy(universe, features, config)
+
+        self.assertFalse(result.events.empty)
+        self.assertIn("ELF", result.events.iloc[0]["selected_symbols"])
+        self.assertGreater(result.metrics["return_pct"], 0.0)
 
     def test_score_weighting_allocates_more_to_higher_score(self) -> None:
         ranking = pd.DataFrame(
